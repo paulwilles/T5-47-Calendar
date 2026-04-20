@@ -1,13 +1,6 @@
 # Calendar helper service
 
-This service is the bridge between Google Calendar, Google Tasks, and the T5 device.
-
-## Current status
-
-- mock mode works immediately
-- google mode is now wired in
-- if google auth is not ready, the service falls back to mock data safely
-- the device can keep using the same read-only JSON endpoints
+This service bridges Google Calendar and Google Tasks to the LilyGo T5 display over a simple local JSON API.
 
 ## Endpoints
 
@@ -17,30 +10,44 @@ This service is the bridge between Google Calendar, Google Tasks, and the T5 dev
 - GET /api/v1/day/{offset}
 - GET /api/v1/item/{item_id}
 
-## Setup
+## Local setup
 
-1. Install dependencies
-2. Copy .env.example to .env
-3. For google mode, place your OAuth client file in this folder as client_secret.json
-4. Run the auth bootstrap once to generate token.json
-5. Start the server
+1. Create a Python virtual environment.
+2. Install the requirements from this folder.
+3. Copy .env.example to .env.
+4. Place your Google OAuth desktop client file here as client_secret.json.
+5. Run auth_bootstrap.py once to create token.json.
+6. Start the service with uvicorn.
 
-## Run locally
-
-PowerShell:
+Example commands:
 
 python -m pip install -r requirements.txt
 python auth_bootstrap.py
-python -m uvicorn server:app --reload --host 0.0.0.0 --port 8080
+python -m uvicorn server:app --host 0.0.0.0 --port 8080
 
 ## Important settings
 
 - HELPER_MODE=mock for immediate testing
-- HELPER_MODE=google to pull real data
-- GOOGLE_CALENDAR_IDS=primary or a comma-separated list
-- GOOGLE_TASK_LIST_IDS=auto to load all task lists
-- HELPER_TIMEZONE should match your home timezone
+- HELPER_MODE=google for real Google data
+- GOOGLE_CALENDAR_IDS=auto or a comma-separated list
+- GOOGLE_TASK_LIST_IDS=auto or a comma-separated list
+- HELPER_TIMEZONE should match the home timezone of the display
+
+## Raspberry Pi deployment
+
+The recommended production setup is to run this helper on a Raspberry Pi or another always-on home server.
+
+### Recommended flow
+
+1. Copy the project to the Pi.
+2. Create a virtual environment on the Pi.
+3. Install requirements.
+4. Copy your existing client_secret.json and token.json from your current machine to the Pi.
+5. Copy .env.example to .env and confirm the host timezone settings.
+6. Install the provided systemd service so the helper starts automatically at boot.
+
+See the deployment files under the deploy folder for a ready-to-use systemd unit and installation script.
 
 ## Device note
 
-Update the helper service URL in the firmware config to point to the computer or server running this API on your local network.
+Update the helper service URL in the firmware config to point to the Raspberry Pi IP or hostname on your local network.

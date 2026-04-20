@@ -1,53 +1,37 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 | Linux |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- | ----- |
+# T5 4.7 Family Calendar
 
-# Hello World Example
+This project turns a LilyGo T5 4.7 inch e-paper board into a wall-mounted family calendar dashboard.
 
-Starts a FreeRTOS task to print "Hello World".
+## Features
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+- landscape dashboard layout for agenda and 4-week overview
+- Wi-Fi sync from a small helper service
+- Google Calendar and Google Tasks support
+- button navigation on the device
+- designed for the ESP32 WROVER-E based T5 board
 
-## How to use example
+## Project layout
 
-Follow detailed instructions provided specifically for this example.
+- main contains the ESP-IDF firmware
+- helper_service contains the Python API bridge
+- vendor contains the LilyGo display driver source
+- deploy contains Raspberry Pi deployment files
 
-Select the instructions depending on Espressif chip installed on your development board:
+## Helper service hosting
 
-- [ESP32 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html)
-- [ESP32-S2 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s2/get-started/index.html)
+The recommended production setup is to host the helper on a Raspberry Pi or another always-on machine on the home network.
 
+After moving the helper to another machine, point the firmware at that host by updating the default helper URL in the firmware configuration.
 
-## Example folder contents
+## Raspberry Pi quick start
 
-The project **hello_world** contains one source file in C language [hello_world_main.c](main/hello_world_main.c). The file is located in folder [main](main).
+1. Copy this repository to the Pi.
+2. Create a Python virtual environment in the project root.
+3. Install the packages from helper_service/requirements.txt.
+4. Copy client_secret.json, token.json, and your .env file into helper_service on the Pi.
+5. Install the provided systemd unit from deploy/raspberry-pi.
+6. Start and enable the service.
 
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt` files that provide set of directives and instructions describing the project's source files and targets (executable, library, or both).
+## Firmware note
 
-Below is short explanation of remaining files in the project folder.
-
-```
-├── CMakeLists.txt
-├── pytest_hello_world.py      Python script used for automated testing
-├── main
-│   ├── CMakeLists.txt
-│   └── hello_world_main.c
-└── README.md                  This is the file you are currently reading
-```
-
-For more information on structure and contents of ESP-IDF projects, please refer to Section [Build System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/build-system.html) of the ESP-IDF Programming Guide.
-
-## Troubleshooting
-
-* Program upload failure
-
-    * Hardware connection is not correct: run `idf.py -p PORT monitor`, and reboot your board to see if there are any output logs.
-    * The baud rate for downloading is too high: lower your baud rate in the `menuconfig` menu, and try again.
-
-## Technical support and feedback
-
-Please use the following feedback channels:
-
-* For technical queries, go to the [esp32.com](https://esp32.com/) forum
-* For a feature request or bug report, create a [GitHub issue](https://github.com/espressif/esp-idf/issues)
-
-We will get back to you as soon as possible.
+For local Wi-Fi credentials, use the local override pattern described in main/app_config_local.example.h so real credentials stay out of git.

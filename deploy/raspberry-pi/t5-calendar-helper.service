@@ -1,0 +1,17 @@
+[Unit]
+Description=T5 Calendar Helper Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/t5-47-calendar
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/t5-47-calendar/.venv/bin/python -m uvicorn helper_service.server:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
