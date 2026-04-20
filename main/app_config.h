@@ -33,4 +33,10 @@
 #define APP_NTP_SERVER_1 "pool.ntp.org"
 #define APP_NTP_SERVER_2 "time.nist.gov"
 
+#if defined(__has_include)
+  #if __has_include("app_config_local.h")
+    #include "app_config_local.h"
+  #endif
+#endif
+
 #endif

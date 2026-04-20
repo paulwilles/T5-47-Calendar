@@ -70,6 +70,9 @@ compile_commands.json
 # Editor settings
 .vscode/
 
+# Local app secrets
+main/app_config_local.h
+
 # Windows specific
 Thumbs.db
 ehthumbs.db
