@@ -621,19 +621,36 @@ void display_layer_update_clock(const char *datetime_str)
         return;
     }
 
-    /* Repaint the clock slot in the framebuffer.
-     * Redraw border lines so the partial rect looks seamless. */
+    /* Repaint the clock slot in the framebuffer. */
     fill_rect(CLOCK_X, 0, CLOCK_W, APP_TOP_BAR_HEIGHT, COLOR_DARK);
     draw_hline(CLOCK_X, 0, CLOCK_W, COLOR_BLACK);
     draw_hline(CLOCK_X, APP_TOP_BAR_HEIGHT - 1, CLOCK_W, COLOR_BLACK);
     draw_fira_small_white(CLOCK_X + 4, 7, datetime_str);
 
-    /* Push only the clock rect to the EPD — no epd_clear(), so no screen flash */
-    Rect_t clock_rect = { .x = CLOCK_X, .y = CLOCK_Y, .width = CLOCK_W, .height = CLOCK_H };
-    ESP_LOGI(TAG, "Clock partial update: %s", datetime_str);
-    epd_poweron();
-    epd_draw_grayscale_image(clock_rect, s_framebuffer);
-    epd_poweroff();
+    /* Update the FULL top-bar width so there is no internal boundary and therefore
+     * no gap artefact from the partial clear.  The screen edges (x=0, x=960) are
+     * the only boundaries, which are invisible.
+     * APP_SCREEN_WIDTH (960) is even → row_bytes is an integer. */
+    const int upd_x = 0;
+    const int upd_w = APP_SCREEN_WIDTH;
+    const int upd_h = APP_TOP_BAR_HEIGHT;
+    Rect_t topbar_rect = { .x = upd_x, .y = 0, .width = upd_w, .height = upd_h };
+    const size_t row_bytes = (size_t)upd_w / 2;
+    uint8_t *topbar_buf = malloc(row_bytes * upd_h);
+    if (topbar_buf) {
+        for (int row = 0; row < upd_h; ++row) {
+            const uint8_t *src = s_framebuffer + ((size_t)row * APP_SCREEN_WIDTH) / 2;
+            memcpy(topbar_buf + (size_t)row * row_bytes, src, row_bytes);
+        }
+        ESP_LOGI(TAG, "Clock partial update (full top bar): %s", datetime_str);
+        epd_poweron();
+        epd_clear_area_cycles(topbar_rect, 2, 20);
+        epd_draw_grayscale_image(topbar_rect, topbar_buf);
+        epd_poweroff();
+        free(topbar_buf);
+    } else {
+        ESP_LOGW(TAG, "Clock partial update skipped: malloc failed");
+    }
 }
 
 void display_layer_render(const display_render_request_t *request)

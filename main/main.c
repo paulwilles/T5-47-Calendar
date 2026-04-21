@@ -10,6 +10,7 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "app_config.h"
+#include "battery_monitor.h"
 #include "button_input.h"
 #include "display_layer.h"
 #include "helper_service.h"
@@ -31,7 +32,7 @@ typedef struct {
     int last_rendered_item_index;
     ui_mode_t mode;
     ui_mode_t last_rendered_mode;
-    char last_wifi_status[24];
+    char last_wifi_status[128];
     int render_count;
 } app_state_t;
 
@@ -170,7 +171,13 @@ static void log_right_pane(const app_state_t *state)
 
 static void render_dashboard(app_state_t *state)
 {
-    const char *wifi_status = wifi_manager_status_text();
+    const char *wifi_status_raw = wifi_manager_status_text();
+    char batt_str[16];
+    battery_monitor_format(batt_str, sizeof(batt_str));
+    char wifi_status_buf[128];
+    snprintf(wifi_status_buf, sizeof(wifi_status_buf), "%.60s  |  %s",
+             wifi_status_raw ? wifi_status_raw : "", batt_str);
+    const char *wifi_status = wifi_status_buf;
     bool needs_refresh = (state->render_count == 0) ||
                          !snapshot_visual_equals(&state->snapshot, &state->last_rendered_snapshot) ||
                          state->selected_day_index != state->last_rendered_day_index ||
@@ -298,6 +305,10 @@ void app_main(void)
     esp_err_t display_err = display_layer_init();
     if (display_err != ESP_OK) {
         ESP_LOGE(TAG, "Display init failed: %s", esp_err_to_name(display_err));
+    }
+    esp_err_t batt_err = battery_monitor_init();
+    if (batt_err != ESP_OK) {
+        ESP_LOGW(TAG, "Battery monitor init failed: %s", esp_err_to_name(batt_err));
     }
     ESP_ERROR_CHECK(button_input_init());
     ESP_ERROR_CHECK(helper_service_init(NULL));
