@@ -32,6 +32,8 @@ typedef struct {
 typedef struct {
     char weekday[8];
     uint8_t day_of_month;
+    char month_name[8];   /* abbreviated month, e.g. "Apr" */
+    uint16_t year;        /* 4-digit year, e.g. 2026 */
     bool in_current_month;
     bool has_items;
     uint8_t item_count;

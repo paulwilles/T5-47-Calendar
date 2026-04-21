@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "firasans.h"
+#include "firasans_small.h"
 
 static const char *TAG = "display_layer";
 
@@ -19,11 +20,12 @@ static const char *TAG = "display_layer";
 #define COLOR_LIGHT 0xC
 #define COLOR_WHITE 0xF
 
-/* Clock region constants — must match the position used in build_top_bar() */
-#define CLOCK_X      (APP_SCREEN_WIDTH - 262)
-#define CLOCK_Y      8
-#define CLOCK_W      256   /* 21 chars * 12px + margin, kept even for EPD alignment */
-#define CLOCK_H      28    /* covers text rows y=12..y=26 with margin */
+/* Clock region constants — must match build_top_bar().  FiraSansSmall advance_y=30.
+ * Width sized for "Tue 21 Apr 2026 17:32" at ~13px/char avg = ~280px + margin. */
+#define CLOCK_X      (APP_SCREEN_WIDTH - 310)
+#define CLOCK_Y      0
+#define CLOCK_W      308   /* even number for EPD 4-bit alignment */
+#define CLOCK_H      APP_TOP_BAR_HEIGHT
 
 static uint8_t *s_framebuffer = NULL;
 static size_t s_framebuffer_size = 0;
@@ -172,29 +174,131 @@ static void draw_text(int x, int y, const char *text, uint8_t shade, int scale, 
     }
 }
 
+/* Forward declarations for FiraSans helpers used by build_top_bar */
+static void draw_fira(int x, int top_y, const char *text);
+static void draw_fira_white(int x, int top_y, const char *text);
+static void draw_fira_small(int x, int top_y, const char *text);
+static void draw_fira_small_white(int x, int top_y, const char *text);
+static void draw_fira_small_truncated(int x, int top_y, const char *text, int max_w);
+static void draw_fira_small_white_truncated(int x, int top_y, const char *text, int max_w);
+
 static void build_top_bar(const display_render_request_t *request)
 {
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
     draw_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_BLACK);
+    /* Vertically centre FiraSansSmall (ascender=24) inside bar (height=38).
+     * top_y=7 → baseline=7+24=31, descender ends at 31+7=38 — fits exactly. */
+    const int ty = 7;
     if (request->wifi_status) {
-        draw_text(12, 12, request->wifi_status, COLOR_WHITE, 3, 16);
+        draw_fira_small_white(12, ty, request->wifi_status);
     }
-    draw_text(225, 12, "RST  BOOT  PREV  NEXT  SEL", COLOR_WHITE, 3, 28);
+    draw_fira_small_white(240, ty, "RST  BOOT  PREV  NEXT  SEL");
     if (request->datetime_str) {
-        draw_text(CLOCK_X, 12, request->datetime_str, COLOR_WHITE, 3, 21);
+        draw_fira_small_white(CLOCK_X + 4, ty, request->datetime_str);
     }
 }
 
 /* --- FiraSans helpers ---------------------------------------------------- */
 
-/* Draw one line of FiraSans text. top_y is the top of the text cell;     *
- * we add the ascender internally to get the baseline.                     */
+/* Draw one line of FiraSans (large) text. top_y is the top of the cell.  */
 static void draw_fira(int x, int top_y, const char *text)
 {
     if (!text || !text[0] || !s_framebuffer) return;
     int32_t cx = x;
     int32_t cy = top_y + FiraSans.ascender;
     writeln(&FiraSans, text, &cx, &cy, s_framebuffer);
+}
+
+/* Draw FiraSans (large) white text on a dark background. */
+static void draw_fira_white(int x, int top_y, const char *text)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    FontProperties props = {
+        .fg_color = COLOR_WHITE, .bg_color = COLOR_DARK,
+        .fallback_glyph = 0, .flags = 0
+    };
+    int32_t cx = x;
+    int32_t cy = top_y + FiraSans.ascender;
+    write_mode(&FiraSans, text, &cx, &cy, s_framebuffer, BLACK_ON_WHITE, &props);
+}
+
+/* Draw one line of FiraSansSmall text (advance_y=30, ascender=24). */
+static void draw_fira_small(int x, int top_y, const char *text)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    int32_t cx = x;
+    int32_t cy = top_y + FiraSansSmall.ascender;
+    writeln(&FiraSansSmall, text, &cx, &cy, s_framebuffer);
+}
+
+/* Draw FiraSansSmall white text on a dark background. */
+static void draw_fira_small_white(int x, int top_y, const char *text)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    FontProperties props = {
+        .fg_color = COLOR_WHITE, .bg_color = COLOR_DARK,
+        .fallback_glyph = 0, .flags = 0
+    };
+    int32_t cx = x;
+    int32_t cy = top_y + FiraSansSmall.ascender;
+    write_mode(&FiraSansSmall, text, &cx, &cy, s_framebuffer, BLACK_ON_WHITE, &props);
+}
+
+/* Draw FiraSansSmall text, truncating with "..." if it exceeds max_w px. */
+static void draw_fira_small_truncated(int x, int top_y, const char *text, int max_w)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    int32_t tx = x, ty2 = 0, x1, y1, tw, th;
+    get_text_bounds(&FiraSansSmall, text, &tx, &ty2, &x1, &y1, &tw, &th, NULL);
+    if (tw <= max_w) {
+        draw_fira_small(x, top_y, text);
+        return;
+    }
+    /* Scan from end to find the longest prefix that fits with "..." appended */
+    char buf[96];
+    strncpy(buf, text, sizeof(buf) - 4);
+    buf[sizeof(buf) - 4] = '\0';
+    int len = (int)strnlen(buf, sizeof(buf) - 4);
+    while (len > 0) {
+        buf[len] = '\0';
+        char candidate[100];
+        snprintf(candidate, sizeof(candidate), "%s...", buf);
+        tx = x; ty2 = 0;
+        get_text_bounds(&FiraSansSmall, candidate, &tx, &ty2, &x1, &y1, &tw, &th, NULL);
+        if (tw <= max_w) {
+            draw_fira_small(x, top_y, candidate);
+            return;
+        }
+        len--;
+    }
+}
+
+/* Same as draw_fira_small_truncated but draws white text on a dark background. */
+static void draw_fira_small_white_truncated(int x, int top_y, const char *text, int max_w)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    int32_t tx = x, ty2 = 0, x1, y1, tw, th;
+    get_text_bounds(&FiraSansSmall, text, &tx, &ty2, &x1, &y1, &tw, &th, NULL);
+    if (tw <= max_w) {
+        draw_fira_small_white(x, top_y, text);
+        return;
+    }
+    char buf[96];
+    strncpy(buf, text, sizeof(buf) - 4);
+    buf[sizeof(buf) - 4] = '\0';
+    int len = (int)strnlen(buf, sizeof(buf) - 4);
+    while (len > 0) {
+        buf[len] = '\0';
+        char candidate[100];
+        snprintf(candidate, sizeof(candidate), "%s...", buf);
+        tx = x; ty2 = 0;
+        get_text_bounds(&FiraSansSmall, candidate, &tx, &ty2, &x1, &y1, &tw, &th, NULL);
+        if (tw <= max_w) {
+            draw_fira_small_white(x, top_y, candidate);
+            return;
+        }
+        len--;
+    }
 }
 
 /* Draw FiraSans text with word-wrap.  Wraps at word boundaries to fit      *
@@ -242,14 +346,20 @@ static int draw_fira_wrapped(int x, int top_y, const char *text, int max_w, int 
 static void build_overview_grid(const display_render_request_t *request)
 {
     int origin_x = APP_LEFT_PANE_WIDTH + 8;
-    int origin_y = APP_TOP_BAR_HEIGHT + 28;
+    int origin_y = APP_TOP_BAR_HEIGHT + 40;   /* FiraSansSmall title (advance_y=30) + 10px gap */
     int grid_w = APP_RIGHT_PANE_WIDTH - 16;
-    int grid_h = APP_SCREEN_HEIGHT - APP_TOP_BAR_HEIGHT - 36;
+    int grid_h = APP_SCREEN_HEIGHT - APP_TOP_BAR_HEIGHT - 48;
     int cell_w = grid_w / 7;
     int cell_h = grid_h / 4;
 
-    draw_text(origin_x, APP_TOP_BAR_HEIGHT + 8, request->detail_mode ? "DETAIL" : "4 WEEK VIEW", COLOR_BLACK, 3, 20);
+    draw_fira_small(origin_x, APP_TOP_BAR_HEIGHT + 4, request->detail_mode ? "DETAIL" : "4 Week View");
     draw_rect(origin_x, origin_y, grid_w, grid_h, COLOR_DARK);
+
+    /* Tight line step for 4-line month-start cells.
+     * Use ascender (24) instead of advance_y (30) so 4 lines fit in ~cell_h.
+     * cell_h ≈ 113px:  4px pad + 4 × 26px = 108px  ✓ */
+    const int LINE = 26;
+    const int PAD  = 4;
 
     for (int row = 0; row < 4; ++row) {
         for (int col = 0; col < 7; ++col) {
@@ -257,6 +367,8 @@ static void build_overview_grid(const display_render_request_t *request)
             int x = origin_x + (col * cell_w);
             int y = origin_y + (row * cell_h);
             bool selected = (index == request->selected_day_index);
+
+            /* Cell border — black when selected, mid otherwise */
             draw_rect(x, y, cell_w, cell_h, selected ? COLOR_BLACK : COLOR_MID);
 
             if (!request->snapshot || index >= request->snapshot->day_count) {
@@ -264,15 +376,48 @@ static void build_overview_grid(const display_render_request_t *request)
             }
 
             const overview_day_t *day = &request->snapshot->overview[index];
-            if (selected) {
-                fill_rect(x + 1, y + 1, cell_w - 2, cell_h - 2, COLOR_LIGHT);
-            }
-            draw_text(x + 8, y + 8, day->weekday, COLOR_BLACK, 2, 8);
+
+            /* Fill cell interior */
+            fill_rect(x + 1, y + 1, cell_w - 2, cell_h - 2,
+                      selected ? COLOR_DARK : COLOR_WHITE);
+
+            /* Show month + year on the first visible cell (index 0) and
+             * on any cell whose day_of_month is 1 (start of a new month). */
+            bool show_month = (index == 0) || (day->day_of_month == 1);
+
             char num[8];
             snprintf(num, sizeof(num), "%u", day->day_of_month);
-            draw_text(x + 8, y + 28, num, COLOR_BLACK, 3, 4);
-            if (day->item_count > 0) {
-                fill_rect(x + cell_w - 18, y + 8, 10, 10, COLOR_DARK);
+            char year_str[8];
+            snprintf(year_str, sizeof(year_str), "%u", day->year);
+
+            if (selected) {
+                if (show_month) {
+                    draw_fira_small_white(x + PAD, y + PAD,              day->weekday);
+                    draw_fira_small_white(x + PAD, y + PAD + LINE,       num);
+                    draw_fira_small_white(x + PAD, y + PAD + LINE * 2,   day->month_name);
+                    draw_fira_small_white(x + PAD, y + PAD + LINE * 3,   year_str);
+                } else {
+                    draw_fira_small_white(x + PAD, y + PAD,              day->weekday);
+                    draw_fira_small_white(x + PAD, y + PAD + LINE,       num);
+                }
+                /* Item dot: white on dark when selected */
+                if (day->item_count > 0) {
+                    fill_rect(x + cell_w - 14, y + PAD, 8, 8, COLOR_WHITE);
+                }
+            } else {
+                if (show_month) {
+                    draw_fira_small(x + PAD, y + PAD,              day->weekday);
+                    draw_fira_small(x + PAD, y + PAD + LINE,       num);
+                    draw_fira_small(x + PAD, y + PAD + LINE * 2,   day->month_name);
+                    draw_fira_small(x + PAD, y + PAD + LINE * 3,   year_str);
+                } else {
+                    draw_fira_small(x + PAD, y + PAD,              day->weekday);
+                    draw_fira_small(x + PAD, y + PAD + LINE,       num);
+                }
+                /* Item dot: dark on white when not selected */
+                if (day->item_count > 0) {
+                    fill_rect(x + cell_w - 14, y + PAD, 8, 8, COLOR_DARK);
+                }
             }
         }
     }
@@ -283,10 +428,10 @@ static void build_left_agenda(const display_render_request_t *request)
     int pane_x = 8;
     int pane_y = APP_TOP_BAR_HEIGHT + 8;
     int pane_w = APP_LEFT_PANE_WIDTH - 12;
-    int pane_h = APP_SCREEN_HEIGHT - APP_TOP_BAR_HEIGHT - 16;
 
-    draw_text(pane_x + 8, pane_y + 6, "AGENDA", COLOR_BLACK, 3, 16);
-    draw_rect(pane_x, pane_y + 24, pane_w, pane_h - 24, COLOR_DARK);
+    /* --- Agenda pane header: "AGENDA  <day label>" on a single line --- */
+    const int SML = (int)FiraSansSmall.advance_y;  /* 30 */
+    draw_fira_small(pane_x + 8, pane_y, "AGENDA");
 
     if (!request->snapshot) {
         return;
@@ -297,28 +442,54 @@ static void build_left_agenda(const display_render_request_t *request)
         return;
     }
 
-    draw_text(pane_x + 8, pane_y + 32, schedule->day_label, COLOR_BLACK, 2, 24);
-    int item_y = pane_y + 60;
-    /* Each item box: 12px time label + 4px gap + FiraSans title (~51px) + 5px pad = 72px; step 76px */
-    const int ITEM_H = 72;
-    const int ITEM_STEP = 76;
+    /* Day label on the SAME line as "AGENDA", starting 12px after the word */
+    int32_t agenda_x = pane_x + 8, agenda_y = 0, ax1, ay1, aw, ah;
+    get_text_bounds(&FiraSansSmall, "AGENDA", &agenda_x, &agenda_y, &ax1, &ay1, &aw, &ah, NULL);
+    const int DAY_LABEL_X = pane_x + 8 + aw + 12;
+    const int DAY_LABEL_W = pane_w - (DAY_LABEL_X - pane_x) - 6;
+    draw_fira_small_truncated(DAY_LABEL_X, pane_y, schedule->day_label, DAY_LABEL_W);
 
-    for (int i = 0; i < schedule->item_count && i < 5; ++i) {
+    /* Items list below the single-line header + 4px gap */
+    int items_top = pane_y + SML + 4;
+    int items_h   = APP_SCREEN_HEIGHT - items_top - 8;
+    draw_rect(pane_x, items_top, pane_w, items_h, COLOR_DARK);
+
+    /* Two-line item layout:
+     *   Line 1: time range   (FiraSansSmall, advance_y=30)
+     *   Line 2: title        (FiraSansSmall, truncated to fit pane)
+     * ITEM_PAD=2  ITEM_H = 2 + 30 + 30 = 62  ITEM_STEP = 64  MAX_ITEMS = 7
+     * 7 × 64 + 2 (initial gap) = 450 ≤ ~452px available */
+    const int ITEM_PAD  = 2;
+    const int ITEM_H    = ITEM_PAD + SML + SML;   /* 62 */
+    const int ITEM_STEP = ITEM_H + 2;              /* 64 */
+    const int MAX_ITEMS = 7;
+    /* text available width inside a box (6px left margin, 6px right margin) */
+    const int TEXT_W    = pane_w - 8 - 12;        /* box_w=pane_w-8; 12px margins */
+
+    int item_y = items_top + 2;
+    for (int i = 0; i < schedule->item_count && i < MAX_ITEMS; ++i) {
         const calendar_item_t *item = &schedule->items[i];
         bool selected = (i == request->selected_item_index);
-        char time_text[32] = {0};
+
+        /* Line 1: time range */
+        char time_text[40] = {0};
         if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
-            snprintf(time_text, sizeof(time_text), "ALL DAY");
+            snprintf(time_text, sizeof(time_text), "All day");
         } else if (item->end_label[0] != '\0') {
-            snprintf(time_text, sizeof(time_text), "%s-%s", item->start_label, item->end_label);
+            snprintf(time_text, sizeof(time_text), "%s - %s", item->start_label, item->end_label);
         } else {
             snprintf(time_text, sizeof(time_text), "%s", item->start_label);
         }
 
-        fill_rect(pane_x + 8, item_y, pane_w - 16, ITEM_H, selected ? COLOR_LIGHT : COLOR_WHITE);
-        draw_rect(pane_x + 8, item_y, pane_w - 16, ITEM_H, selected ? COLOR_BLACK : COLOR_MID);
-        draw_text(pane_x + 14, item_y + 5, time_text, COLOR_BLACK, 2, 16);
-        draw_fira(pane_x + 14, item_y + 20, item->title);
+        fill_rect(pane_x + 4, item_y, pane_w - 8, ITEM_H, selected ? COLOR_DARK : COLOR_WHITE);
+        draw_rect(pane_x + 4, item_y, pane_w - 8, ITEM_H, selected ? COLOR_BLACK : COLOR_MID);
+        if (selected) {
+            draw_fira_small_white(pane_x + 10, item_y + ITEM_PAD, time_text);
+            draw_fira_small_white_truncated(pane_x + 10, item_y + ITEM_PAD + SML, item->title, TEXT_W);
+        } else {
+            draw_fira_small(pane_x + 10, item_y + ITEM_PAD, time_text);
+            draw_fira_small_truncated(pane_x + 10, item_y + ITEM_PAD + SML, item->title, TEXT_W);
+        }
         item_y += ITEM_STEP;
     }
 }
@@ -427,8 +598,10 @@ esp_err_t display_layer_init(void)
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT, COLOR_WHITE);
     fill_rect(0, 0, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
     fill_rect(0, APP_SCREEN_HEIGHT - 6, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
-    draw_text(APP_SCREEN_WIDTH / 2 - 120, APP_SCREEN_HEIGHT / 2 - 30, "T5 Calendar", COLOR_BLACK, 4, 20);
-    draw_text(APP_SCREEN_WIDTH / 2 - 80, APP_SCREEN_HEIGHT / 2 + 10,  "Connecting...", COLOR_MID, 3, 16);
+    /* Two FiraSansSmall lines centred on the screen.
+     * advance_y=30 → two-line block is ~55px; centre around mid point. */
+    draw_fira_small(APP_SCREEN_WIDTH / 2 - 80, APP_SCREEN_HEIGHT / 2 - 35, "T5 Calendar");
+    draw_fira_small(APP_SCREEN_WIDTH / 2 - 90, APP_SCREEN_HEIGHT / 2 - 5,  "Connecting...");
 
     ESP_LOGI(TAG, "Initializing physical E-paper panel");
     epd_init();
@@ -448,9 +621,12 @@ void display_layer_update_clock(const char *datetime_str)
         return;
     }
 
-    /* Repaint the clock slot in the framebuffer (dark bg + white text) */
-    fill_rect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H, COLOR_DARK);
-    draw_text(CLOCK_X, 12, datetime_str, COLOR_WHITE, 3, 21);
+    /* Repaint the clock slot in the framebuffer.
+     * Redraw border lines so the partial rect looks seamless. */
+    fill_rect(CLOCK_X, 0, CLOCK_W, APP_TOP_BAR_HEIGHT, COLOR_DARK);
+    draw_hline(CLOCK_X, 0, CLOCK_W, COLOR_BLACK);
+    draw_hline(CLOCK_X, APP_TOP_BAR_HEIGHT - 1, CLOCK_W, COLOR_BLACK);
+    draw_fira_small_white(CLOCK_X + 4, 7, datetime_str);
 
     /* Push only the clock rect to the EPD — no epd_clear(), so no screen flash */
     Rect_t clock_rect = { .x = CLOCK_X, .y = CLOCK_Y, .width = CLOCK_W, .height = CLOCK_H };

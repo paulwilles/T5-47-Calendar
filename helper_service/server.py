@@ -171,6 +171,8 @@ def build_mock_data(source: str = "mock") -> dict[str, Any]:
                 "label": current.strftime("%a %d %b"),
                 "weekday": current.strftime("%a"),
                 "day": current.day,
+                "month": current.strftime("%b"),
+                "year": current.year,
                 "item_count": len(items),
                 "items": items,
             }
@@ -350,6 +352,8 @@ def build_google_data() -> dict[str, Any]:
                 "label": day_start.strftime("%a %d %b"),
                 "weekday": day_start.strftime("%a"),
                 "day": current_date.day,
+                "month": current_date.strftime("%b"),
+                "year": current_date.year,
                 "item_count": len(items),
                 "items": items,
             }

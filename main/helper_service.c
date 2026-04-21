@@ -162,7 +162,9 @@ static void build_mock_snapshot(helper_snapshot_t *snapshot)
             localtime_r(&current, &tm_info);
             strftime(schedule->day_label, sizeof(schedule->day_label), "%a %d %b", &tm_info);
             strftime(overview->weekday, sizeof(overview->weekday), "%a", &tm_info);
+            strftime(overview->month_name, sizeof(overview->month_name), "%b", &tm_info);
             overview->day_of_month = (uint8_t)tm_info.tm_mday;
+            overview->year = (uint16_t)(tm_info.tm_year + 1900);
             overview->in_current_month = true;
         } else {
             snprintf(schedule->day_label, sizeof(schedule->day_label), "%s", i == 0 ? "WAITING FOR DATA" : "");
@@ -299,6 +301,8 @@ static void parse_day_json(cJSON *day_json, helper_snapshot_t *snapshot)
     snprintf(schedule->day_label, sizeof(schedule->day_label), "%s", label);
     snprintf(overview->weekday, sizeof(overview->weekday), "%s", json_string_or(day_json, "weekday", overview->weekday));
     overview->day_of_month = (uint8_t)json_int_or(day_json, "day", overview->day_of_month);
+    snprintf(overview->month_name, sizeof(overview->month_name), "%s", json_string_or(day_json, "month", overview->month_name));
+    overview->year = (uint16_t)json_int_or(day_json, "year", overview->year);
 
     cJSON *items = cJSON_GetObjectItemCaseSensitive(day_json, "items");
     if (cJSON_IsArray(items)) {
