@@ -9,6 +9,7 @@
 #include "epd_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "firasans.h"
 
 static const char *TAG = "display_layer";
 
@@ -18,10 +19,15 @@ static const char *TAG = "display_layer";
 #define COLOR_LIGHT 0xC
 #define COLOR_WHITE 0xF
 
+/* Clock region constants — must match the position used in build_top_bar() */
+#define CLOCK_X      (APP_SCREEN_WIDTH - 262)
+#define CLOCK_Y      8
+#define CLOCK_W      256   /* 21 chars * 12px + margin, kept even for EPD alignment */
+#define CLOCK_H      28    /* covers text rows y=12..y=26 with margin */
+
 static uint8_t *s_framebuffer = NULL;
 static size_t s_framebuffer_size = 0;
 static bool s_epd_ready = false;
-static bool s_first_paint = true;
 static int s_fast_refresh_count = 0;
 #define FULL_REFRESH_EVERY_N_FAST 10   /* force a full clear after this many fast redraws to prevent ghosting */
 
@@ -168,12 +174,69 @@ static void draw_text(int x, int y, const char *text, uint8_t shade, int scale, 
 
 static void build_top_bar(const display_render_request_t *request)
 {
-    fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_LIGHT);
-    draw_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
-    draw_text(12, 12, "PREV NEXT SEL UP DOWN", COLOR_BLACK, 3, 28);
+    fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
+    draw_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_BLACK);
     if (request->wifi_status) {
-        draw_text(APP_SCREEN_WIDTH - 160, 12, request->wifi_status, COLOR_BLACK, 3, 16);
+        draw_text(12, 12, request->wifi_status, COLOR_WHITE, 3, 16);
     }
+    draw_text(225, 12, "RST  BOOT  PREV  NEXT  SEL", COLOR_WHITE, 3, 28);
+    if (request->datetime_str) {
+        draw_text(CLOCK_X, 12, request->datetime_str, COLOR_WHITE, 3, 21);
+    }
+}
+
+/* --- FiraSans helpers ---------------------------------------------------- */
+
+/* Draw one line of FiraSans text. top_y is the top of the text cell;     *
+ * we add the ascender internally to get the baseline.                     */
+static void draw_fira(int x, int top_y, const char *text)
+{
+    if (!text || !text[0] || !s_framebuffer) return;
+    int32_t cx = x;
+    int32_t cy = top_y + FiraSans.ascender;
+    writeln(&FiraSans, text, &cx, &cy, s_framebuffer);
+}
+
+/* Draw FiraSans text with word-wrap.  Wraps at word boundaries to fit      *
+ * within max_w pixels.  max_lines <= 0 means unlimited.                   *
+ * Returns the y coordinate of the row after the last drawn line.          */
+static int draw_fira_wrapped(int x, int top_y, const char *text, int max_w, int max_lines)
+{
+    if (!text || !text[0] || !s_framebuffer) return top_y;
+    char buf[256];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    int line = 0;
+    char *head = buf;
+    const int line_h = (int)FiraSans.advance_y;
+
+    while (*head && (max_lines <= 0 || line < max_lines)) {
+        char *best = head;   /* last word boundary that still fits */
+        char *scan = head;
+        while (*scan) {
+            char *wend = scan;
+            while (*wend && *wend != ' ') wend++;
+            char sv = *wend; *wend = '\0';
+            int32_t tx = x, ty = 0, x1, y1, w, h;
+            get_text_bounds(&FiraSans, head, &tx, &ty, &x1, &y1, &w, &h, NULL);
+            *wend = sv;
+            if (w > max_w) {
+                if (best == head) best = wend; /* single long word: force-break */
+                break;
+            }
+            best = wend;
+            if (!sv) break;
+            scan = wend + 1;
+        }
+        char sv = *best; *best = '\0';
+        draw_fira(x, top_y + line * line_h, head);
+        *best = sv;
+        line++;
+        head = best;
+        if (*head == ' ') head++;
+    }
+    return top_y + line * line_h;
 }
 
 static void build_overview_grid(const display_render_request_t *request)
@@ -236,8 +299,11 @@ static void build_left_agenda(const display_render_request_t *request)
 
     draw_text(pane_x + 8, pane_y + 32, schedule->day_label, COLOR_BLACK, 2, 24);
     int item_y = pane_y + 60;
+    /* Each item box: 12px time label + 4px gap + FiraSans title (~51px) + 5px pad = 72px; step 76px */
+    const int ITEM_H = 72;
+    const int ITEM_STEP = 76;
 
-    for (int i = 0; i < schedule->item_count && i < 6; ++i) {
+    for (int i = 0; i < schedule->item_count && i < 5; ++i) {
         const calendar_item_t *item = &schedule->items[i];
         bool selected = (i == request->selected_item_index);
         char time_text[32] = {0};
@@ -249,11 +315,11 @@ static void build_left_agenda(const display_render_request_t *request)
             snprintf(time_text, sizeof(time_text), "%s", item->start_label);
         }
 
-        fill_rect(pane_x + 8, item_y, pane_w - 16, 56, selected ? COLOR_LIGHT : COLOR_WHITE);
-        draw_rect(pane_x + 8, item_y, pane_w - 16, 56, selected ? COLOR_BLACK : COLOR_MID);
-        draw_text(pane_x + 14, item_y + 6, time_text, COLOR_BLACK, 2, 16);
-        draw_text(pane_x + 14, item_y + 26, item->title, COLOR_BLACK, 2, 22);
-        item_y += 62;
+        fill_rect(pane_x + 8, item_y, pane_w - 16, ITEM_H, selected ? COLOR_LIGHT : COLOR_WHITE);
+        draw_rect(pane_x + 8, item_y, pane_w - 16, ITEM_H, selected ? COLOR_BLACK : COLOR_MID);
+        draw_text(pane_x + 14, item_y + 5, time_text, COLOR_BLACK, 2, 16);
+        draw_fira(pane_x + 14, item_y + 20, item->title);
+        item_y += ITEM_STEP;
     }
 }
 
@@ -286,15 +352,32 @@ static void build_detail_panel(const display_render_request_t *request)
 
     fill_rect(x, y, w, h, COLOR_WHITE);
     draw_rect(x, y, w, h, COLOR_BLACK);
-    draw_text(x + 10, y + 12, item->title, COLOR_BLACK, 3, 20);
-    draw_text(x + 10, y + 50, "TIME", COLOR_BLACK, 2, 8);
-    draw_text(x + 90, y + 50, time_text, COLOR_BLACK, 2, 22);
-    draw_text(x + 10, y + 82, "SOURCE", COLOR_BLACK, 2, 10);
-    draw_text(x + 90, y + 82, item->source[0] ? item->source : "NONE", COLOR_BLACK, 2, 20);
-    draw_text(x + 10, y + 114, "PLACE", COLOR_BLACK, 2, 8);
-    draw_text(x + 90, y + 114, item->location[0] ? item->location : "NONE", COLOR_BLACK, 2, 24);
-    draw_text(x + 10, y + 146, "DETAIL", COLOR_BLACK, 2, 10);
-    draw_text(x + 10, y + 172, item->detail[0] ? item->detail : "NONE", COLOR_BLACK, 2, 34);
+
+    /* Title — word-wrapped, up to 2 lines, no truncation */
+    int field_y = draw_fira_wrapped(x + 12, y + 12, item->title, w - 24, 2) + 12;
+
+    /* Horizontal rule below title */
+    draw_hline(x + 12, field_y - 4, w - 24, COLOR_MID);
+
+    /* Fields: small block-font label on the left, FiraSans value on the right */
+    const int LABEL_W = 100;
+    const int ROW_H = (int)FiraSans.advance_y + 4;
+
+    draw_text(x + 12, field_y + 2,        "TIME",   COLOR_DARK, 2, 8);
+    draw_fira(x + 12 + LABEL_W, field_y,  time_text);
+    field_y += ROW_H;
+
+    draw_text(x + 12, field_y + 2,        "SOURCE", COLOR_DARK, 2, 8);
+    draw_fira(x + 12 + LABEL_W, field_y,  item->source[0]   ? item->source   : "None");
+    field_y += ROW_H;
+
+    draw_text(x + 12, field_y + 2,        "PLACE",  COLOR_DARK, 2, 8);
+    draw_fira(x + 12 + LABEL_W, field_y,  item->location[0] ? item->location : "None");
+    field_y += ROW_H;
+
+    draw_text(x + 12, field_y + 2,        "NOTES",  COLOR_DARK, 2, 8);
+    draw_fira_wrapped(x + 12 + LABEL_W, field_y, item->detail[0] ? item->detail : "None",
+                      w - 24 - LABEL_W, 3);
 }
 
 static void dump_ascii_preview(void)
@@ -339,16 +422,17 @@ esp_err_t display_layer_init(void)
     memset(s_framebuffer, 0xFF, s_framebuffer_size);
     ESP_LOGI(TAG, "Display framebuffer allocated: %u bytes", (unsigned)s_framebuffer_size);
 
+    /* Splash screen: light background so the epd_clear() before the first calendar
+     * render produces no visible flash (clear-to-white on a white screen is invisible). */
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT, COLOR_WHITE);
-    fill_rect(0, 0, APP_SCREEN_WIDTH, 84, COLOR_DARK);
-    draw_text(24, 20, "BOOT TEST", COLOR_WHITE, 5, 16);
-    draw_rect(24, 120, APP_SCREEN_WIDTH - 48, APP_SCREEN_HEIGHT - 160, COLOR_BLACK);
-    draw_text(48, 160, "NEW FIRMWARE", COLOR_BLACK, 4, 20);
+    fill_rect(0, 0, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
+    fill_rect(0, APP_SCREEN_HEIGHT - 6, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
+    draw_text(APP_SCREEN_WIDTH / 2 - 120, APP_SCREEN_HEIGHT / 2 - 30, "T5 Calendar", COLOR_BLACK, 4, 20);
+    draw_text(APP_SCREEN_WIDTH / 2 - 80, APP_SCREEN_HEIGHT / 2 + 10,  "Connecting...", COLOR_MID, 3, 16);
 
     ESP_LOGI(TAG, "Initializing physical E-paper panel");
     epd_init();
     s_epd_ready = true;
-    s_first_paint = true;
 
     epd_poweron();
     epd_clear();
@@ -356,6 +440,24 @@ esp_err_t display_layer_init(void)
     epd_poweroff();
     ESP_LOGI(TAG, "Boot test screen pushed to physical panel");
     return ESP_OK;
+}
+
+void display_layer_update_clock(const char *datetime_str)
+{
+    if (!s_framebuffer || !s_epd_ready || !datetime_str) {
+        return;
+    }
+
+    /* Repaint the clock slot in the framebuffer (dark bg + white text) */
+    fill_rect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H, COLOR_DARK);
+    draw_text(CLOCK_X, 12, datetime_str, COLOR_WHITE, 3, 21);
+
+    /* Push only the clock rect to the EPD — no epd_clear(), so no screen flash */
+    Rect_t clock_rect = { .x = CLOCK_X, .y = CLOCK_Y, .width = CLOCK_W, .height = CLOCK_H };
+    ESP_LOGI(TAG, "Clock partial update: %s", datetime_str);
+    epd_poweron();
+    epd_draw_grayscale_image(clock_rect, s_framebuffer);
+    epd_poweroff();
 }
 
 void display_layer_render(const display_render_request_t *request)
@@ -372,7 +474,7 @@ void display_layer_render(const display_render_request_t *request)
     dump_ascii_preview();
 
     if (s_epd_ready) {
-        bool do_clear = request->full_refresh || s_first_paint;
+        bool do_clear = request->full_refresh;
         if (!do_clear) {
             s_fast_refresh_count++;
             if (s_fast_refresh_count >= FULL_REFRESH_EVERY_N_FAST) {
@@ -388,7 +490,6 @@ void display_layer_render(const display_render_request_t *request)
         if (do_clear) {
             epd_clear();
         }
-        s_first_paint = false;
         epd_draw_grayscale_image(epd_full_screen(), s_framebuffer);
         epd_poweroff();
         ESP_LOGI(TAG, "E-paper refresh complete");

@@ -11,26 +11,23 @@ static int64_t s_last_press_us = 0;
 static const int s_button_pins[] = {
     BOARD_BUTTON_PREV_PIN,
     BOARD_BUTTON_NEXT_PIN,
-    BOARD_BUTTON_UP_PIN,
-    BOARD_BUTTON_DOWN_PIN,
     BOARD_BUTTON_SELECT_PIN,
+    BOARD_BUTTON_HOME_PIN,
 };
 
 static const button_action_t s_button_actions[] = {
     BUTTON_ACTION_PREV,
     BUTTON_ACTION_NEXT,
-    BUTTON_ACTION_UP,
-    BUTTON_ACTION_DOWN,
     BUTTON_ACTION_SELECT,
+    BUTTON_ACTION_HOME,
 };
 
 static const char *s_button_names[] = {
     "none",
     "prev",
     "next",
-    "up",
-    "down",
     "select",
+    "home",
 };
 
 static bool is_pin_valid(int pin)
@@ -62,7 +59,7 @@ esp_err_t button_input_init(void)
 
 const char *button_input_name(button_action_t action)
 {
-    if (action < BUTTON_ACTION_NONE || action > BUTTON_ACTION_SELECT) {
+    if (action < BUTTON_ACTION_NONE || action > BUTTON_ACTION_HOME) {
         return "unknown";
     }
     return s_button_names[action];
@@ -71,11 +68,10 @@ const char *button_input_name(button_action_t action)
 bool button_input_is_available(button_action_t action)
 {
     switch (action) {
-        case BUTTON_ACTION_PREV: return is_pin_valid(BOARD_BUTTON_PREV_PIN);
-        case BUTTON_ACTION_NEXT: return is_pin_valid(BOARD_BUTTON_NEXT_PIN);
-        case BUTTON_ACTION_UP: return is_pin_valid(BOARD_BUTTON_UP_PIN);
-        case BUTTON_ACTION_DOWN: return is_pin_valid(BOARD_BUTTON_DOWN_PIN);
+        case BUTTON_ACTION_PREV:   return is_pin_valid(BOARD_BUTTON_PREV_PIN);
+        case BUTTON_ACTION_NEXT:   return is_pin_valid(BOARD_BUTTON_NEXT_PIN);
         case BUTTON_ACTION_SELECT: return is_pin_valid(BOARD_BUTTON_SELECT_PIN);
+        case BUTTON_ACTION_HOME:   return is_pin_valid(BOARD_BUTTON_HOME_PIN);
         default: return false;
     }
 }

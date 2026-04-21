@@ -8,9 +8,8 @@ typedef enum {
     BUTTON_ACTION_NONE = 0,
     BUTTON_ACTION_PREV,
     BUTTON_ACTION_NEXT,
-    BUTTON_ACTION_UP,
-    BUTTON_ACTION_DOWN,
     BUTTON_ACTION_SELECT,
+    BUTTON_ACTION_HOME,
 } button_action_t;
 
 esp_err_t button_input_init(void);

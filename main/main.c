@@ -89,13 +89,11 @@ static bool snapshot_visual_equals(const helper_snapshot_t *a, const helper_snap
 
 static void log_button_strip(const app_state_t *state)
 {
-    ESP_LOGI(TAG, "Buttons | [1] Prev  [2] Next  [3] Select/Back  [4] Up  [5] Down");
-    ESP_LOGI(TAG, "Button IO | prev=%s next=%s select=%s up=%s down=%s",
-             button_input_is_available(BUTTON_ACTION_PREV) ? "ready" : "reserved",
-             button_input_is_available(BUTTON_ACTION_NEXT) ? "ready" : "reserved",
-             button_input_is_available(BUTTON_ACTION_SELECT) ? "ready" : "reserved",
-             button_input_is_available(BUTTON_ACTION_UP) ? "ready" : "reserved",
-             button_input_is_available(BUTTON_ACTION_DOWN) ? "ready" : "reserved");
+    ESP_LOGI(TAG, "Buttons | [IO35] Prev  [IO34] Next  [IO39] Select  (no Home pin - IO0 is EPD strapping pin)");
+    ESP_LOGI(TAG, "Button IO | prev=%s next=%s select=%s",
+             button_input_is_available(BUTTON_ACTION_PREV)   ? "ready" : "unavailable",
+             button_input_is_available(BUTTON_ACTION_NEXT)   ? "ready" : "unavailable",
+             button_input_is_available(BUTTON_ACTION_SELECT) ? "ready" : "unavailable");
     ESP_LOGI(TAG, "Mode     | %s", state->mode == UI_MODE_DETAIL ? "detail" : "overview");
 }
 
@@ -197,12 +195,20 @@ static void render_dashboard(app_state_t *state)
     /* Navigation moves highlights and clears panels — e-paper requires a full clear to remove
      * existing dark pixels.  Background data updates (same layout, new content) can use a
      * fast redraw to avoid unnecessary flicker. */
+    char datetime_buf[24];
+    {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        strftime(datetime_buf, sizeof(datetime_buf), "%a %d %b %Y %H:%M", tm_info);
+    }
+
     display_render_request_t request = {
         .snapshot = &state->snapshot,
         .selected_day_index = state->selected_day_index,
         .selected_item_index = state->selected_item_index,
         .detail_mode = (state->mode == UI_MODE_DETAIL),
         .wifi_status = wifi_status,
+        .datetime_str = datetime_buf,
         .full_refresh = (state->render_count == 0) || nav_changed || data_changed,
     };
 
@@ -252,12 +258,6 @@ static void apply_button_action(app_state_t *state, button_action_t action)
                 state->selected_day_index++;
             }
             break;
-        case BUTTON_ACTION_UP:
-            state->selected_day_index -= 7;
-            break;
-        case BUTTON_ACTION_DOWN:
-            state->selected_day_index += 7;
-            break;
         case BUTTON_ACTION_SELECT:
             if (state->mode == UI_MODE_OVERVIEW && schedule && schedule->item_count > 0) {
                 state->mode = UI_MODE_DETAIL;
@@ -265,6 +265,11 @@ static void apply_button_action(app_state_t *state, button_action_t action)
             } else {
                 state->mode = UI_MODE_OVERVIEW;
             }
+            break;
+        case BUTTON_ACTION_HOME:
+            state->selected_day_index = 0;
+            state->selected_item_index = 0;
+            state->mode = UI_MODE_OVERVIEW;
             break;
         case BUTTON_ACTION_NONE:
         default:
@@ -280,6 +285,7 @@ void app_main(void)
     app_state_t *state = &s_state;
     memset(state, 0, sizeof(*state));
     int64_t last_refresh_us = 0;
+    int64_t last_clock_us = 0;
 
     ESP_LOGI(TAG, "Starting T5 Family Calendar foundation for the ESP32 WROVER-E board");
     ESP_LOGI(TAG, "Snapshot storage reserved in static memory: %u bytes", (unsigned)sizeof(helper_snapshot_t));
@@ -301,7 +307,11 @@ void app_main(void)
     state->mode = UI_MODE_OVERVIEW;
     state->render_count = 0;
 
-    refresh_snapshot(state);
+    /* Populate snapshot with placeholder data so the struct is valid, but do NOT render yet —
+     * the boot screen should remain visible until we have live data or exhaust all connection
+     * attempts.  render_dashboard() is called explicitly below once we know what we have. */
+    ESP_ERROR_CHECK(helper_service_refresh(&state->snapshot));
+    ensure_valid_selection(state);
     last_refresh_us = esp_timer_get_time();
 
 #if APP_ENABLE_WIFI
@@ -319,12 +329,18 @@ void app_main(void)
             }
         } else {
             ESP_LOGW(TAG, "Wi-Fi connection timed out; continuing with cached/mock snapshot");
+            refresh_snapshot(state);   /* first render: show offline state */
+            last_refresh_us = esp_timer_get_time();
         }
     } else if (wifi_err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi init failed: %s; continuing offline", esp_err_to_name(wifi_err));
+        refresh_snapshot(state);       /* first render: show offline state */
+        last_refresh_us = esp_timer_get_time();
     }
 #else
-    ESP_LOGW(TAG, "Wi-Fi temporarily disabled during hardware display bring-up");
+    ESP_LOGW(TAG, "Wi-Fi disabled");
+    refresh_snapshot(state);           /* first render: show mock/offline state */
+    last_refresh_us = esp_timer_get_time();
 #endif
 
     while (1) {
@@ -335,9 +351,21 @@ void app_main(void)
         }
 
         int64_t now_us = esp_timer_get_time();
-        if ((now_us - last_refresh_us) > (60LL * 1000000LL)) {
+
+        /* Full data + screen refresh every 5 minutes */
+        if ((now_us - last_refresh_us) > (300LL * 1000000LL)) {
             refresh_snapshot(state);
             last_refresh_us = now_us;
+            last_clock_us = now_us;   /* full render already drew the clock */
+        }
+        /* Partial clock-only update every 60 seconds (no epd_clear, no artifacts) */
+        else if ((now_us - last_clock_us) > (60LL * 1000000LL)) {
+            char datetime_buf[24];
+            time_t now = time(NULL);
+            struct tm *tm_info = localtime(&now);
+            strftime(datetime_buf, sizeof(datetime_buf), "%a %d %b %Y %H:%M", tm_info);
+            display_layer_update_clock(datetime_buf);
+            last_clock_us = now_us;
         }
 
         vTaskDelay(pdMS_TO_TICKS(120));
