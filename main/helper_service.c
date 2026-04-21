@@ -217,7 +217,7 @@ static esp_err_t fetch_snapshot_json(char *json_buffer, size_t json_capacity)
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 4000,
+        .timeout_ms = 15000,
         .event_handler = http_event_handler,
         .user_data = &buffer,
     };

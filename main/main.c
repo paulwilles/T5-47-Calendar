@@ -188,12 +188,22 @@ static void render_dashboard(app_state_t *state)
     char generated_at[32] = {0};
     format_timestamp(state->snapshot.generated_at, generated_at, sizeof(generated_at));
 
+    bool nav_changed = state->selected_day_index  != state->last_rendered_day_index  ||
+                       state->selected_item_index != state->last_rendered_item_index ||
+                       state->mode                != state->last_rendered_mode;
+    bool data_changed = !snapshot_visual_equals(&state->snapshot, &state->last_rendered_snapshot) ||
+                        strncmp(state->last_wifi_status, wifi_status, sizeof(state->last_wifi_status)) != 0;
+
+    /* Navigation moves highlights and clears panels — e-paper requires a full clear to remove
+     * existing dark pixels.  Background data updates (same layout, new content) can use a
+     * fast redraw to avoid unnecessary flicker. */
     display_render_request_t request = {
         .snapshot = &state->snapshot,
         .selected_day_index = state->selected_day_index,
         .selected_item_index = state->selected_item_index,
         .detail_mode = (state->mode == UI_MODE_DETAIL),
         .wifi_status = wifi_status,
+        .full_refresh = (state->render_count == 0) || nav_changed || data_changed,
     };
 
     ESP_LOGI(TAG, "============================================================");
@@ -301,6 +311,12 @@ void app_main(void)
             wifi_manager_sync_time(5000);
             refresh_snapshot(state);
             last_refresh_us = esp_timer_get_time();
+            for (int retry = 0; retry < 4 && !state->snapshot.using_live_data; retry++) {
+                ESP_LOGI(TAG, "Live data not ready, retrying in 8s (attempt %d/4)...", retry + 1);
+                vTaskDelay(pdMS_TO_TICKS(8000));
+                refresh_snapshot(state);
+                last_refresh_us = esp_timer_get_time();
+            }
         } else {
             ESP_LOGW(TAG, "Wi-Fi connection timed out; continuing with cached/mock snapshot");
         }

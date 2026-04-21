@@ -22,6 +22,8 @@ static uint8_t *s_framebuffer = NULL;
 static size_t s_framebuffer_size = 0;
 static bool s_epd_ready = false;
 static bool s_first_paint = true;
+static int s_fast_refresh_count = 0;
+#define FULL_REFRESH_EVERY_N_FAST 10   /* force a full clear after this many fast redraws to prevent ghosting */
 
 static void set_pixel(int x, int y, uint8_t shade)
 {
@@ -370,13 +372,26 @@ void display_layer_render(const display_render_request_t *request)
     dump_ascii_preview();
 
     if (s_epd_ready) {
-        ESP_LOGI(TAG, "Starting physical E-paper refresh");
+        bool do_clear = request->full_refresh || s_first_paint;
+        if (!do_clear) {
+            s_fast_refresh_count++;
+            if (s_fast_refresh_count >= FULL_REFRESH_EVERY_N_FAST) {
+                do_clear = true;
+                ESP_LOGI(TAG, "Periodic full clear to reset ghosting (after %d fast refreshes)", s_fast_refresh_count);
+            }
+        }
+        if (do_clear) {
+            s_fast_refresh_count = 0;
+        }
+        ESP_LOGI(TAG, "Starting E-paper refresh (type=%s)", do_clear ? "full" : "fast");
         epd_poweron();
-        epd_clear();
+        if (do_clear) {
+            epd_clear();
+        }
         s_first_paint = false;
         epd_draw_grayscale_image(epd_full_screen(), s_framebuffer);
         epd_poweroff();
-        ESP_LOGI(TAG, "Physical E-paper refresh complete");
+        ESP_LOGI(TAG, "E-paper refresh complete");
     }
 }
 

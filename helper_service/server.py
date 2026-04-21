@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -37,11 +39,11 @@ except Exception:
     LOCAL_TZ = timezone.utc
 
 _CACHE: dict[str, Any] = {
-    "expires_at": datetime.now(timezone.utc),
     "payload": None,
     "source": "cold",
     "error": None,
 }
+_cache_lock = threading.Lock()
 
 
 def _iso_utc(dt: datetime) -> str:
@@ -361,28 +363,60 @@ def build_google_data() -> dict[str, Any]:
     }
 
 
-def get_snapshot_data(force_refresh: bool = False) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    if not force_refresh and _CACHE["payload"] is not None and now < _CACHE["expires_at"]:
-        return _CACHE["payload"]
-
+def _do_cache_refresh() -> None:
+    """Fetch fresh data from Google (or mock) and store it in the cache."""
+    log.info("Cache refresh starting (mode=%s)", HELPER_MODE)
     try:
         payload = build_google_data() if HELPER_MODE == "google" else build_mock_data("mock")
-        _CACHE["payload"] = payload
-        _CACHE["source"] = payload.get("source", HELPER_MODE)
-        _CACHE["error"] = None
-        _CACHE["expires_at"] = now + timedelta(seconds=CACHE_SECONDS)
-        return payload
-    except Exception as exc:
-        log.exception("Helper service refresh failed")
-        _CACHE["error"] = str(exc)
-        if HELPER_MODE == "google" and ALLOW_MOCK_FALLBACK:
-            payload = build_mock_data("mock-fallback")
+        with _cache_lock:
             _CACHE["payload"] = payload
-            _CACHE["source"] = "mock-fallback"
-            _CACHE["expires_at"] = now + timedelta(seconds=60)
-            return payload
-        raise
+            _CACHE["source"] = payload.get("source", HELPER_MODE)
+            _CACHE["error"] = None
+        log.info("Cache refresh complete: source=%s generated_at=%s", _CACHE["source"], payload.get("generated_at"))
+    except Exception as exc:
+        log.exception("Cache refresh failed: %s", exc)
+        with _cache_lock:
+            _CACHE["error"] = str(exc)
+        if HELPER_MODE == "google" and ALLOW_MOCK_FALLBACK:
+            with _cache_lock:
+                if _CACHE["payload"] is None:
+                    payload = build_mock_data("mock-fallback")
+                    _CACHE["payload"] = payload
+                    _CACHE["source"] = "mock-fallback"
+                    log.warning("Using mock-fallback data while Google is unreachable")
+
+
+def _background_refresh_loop() -> None:
+    """Background thread: refresh the cache every CACHE_SECONDS, independent of ESP32 requests."""
+    while True:
+        _do_cache_refresh()
+        time.sleep(CACHE_SECONDS)
+
+
+def get_snapshot_data(force_refresh: bool = False) -> dict[str, Any]:
+    if force_refresh:
+        _do_cache_refresh()
+
+    with _cache_lock:
+        payload = _CACHE["payload"]
+
+    if payload is None:
+        # Background thread hasn't finished its first fetch yet — wait for it synchronously.
+        log.info("Cache cold, doing synchronous initial refresh")
+        _do_cache_refresh()
+        with _cache_lock:
+            payload = _CACHE["payload"]
+
+    if payload is None:
+        raise RuntimeError("No snapshot data available and all refresh attempts failed")
+
+    return payload
+
+
+# Start the background refresh thread at import time so the cache is warm
+# before the first ESP32 request arrives.
+_refresh_thread = threading.Thread(target=_background_refresh_loop, daemon=True, name="cache-refresh")
+_refresh_thread.start()
 
 
 @app.get("/health")
@@ -399,7 +433,7 @@ def health() -> dict[str, Any]:
         "mode": HELPER_MODE,
         "active_source": _CACHE.get("source"),
         "days": SNAPSHOT_DAYS,
-        "cache_seconds": CACHE_SECONDS,
+        "refresh_interval_seconds": CACHE_SECONDS,
         "last_error": _CACHE.get("error"),
         "generated_at": snapshot.get("generated_at") if snapshot else None,
     }
