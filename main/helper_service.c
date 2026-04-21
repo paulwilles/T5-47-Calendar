@@ -16,6 +16,7 @@ static const char *TAG = "helper_service";
 static char g_service_url[APP_URL_LEN] = HELPER_SERVICE_URL_DEFAULT;
 #define HELPER_JSON_BUFFER_CAPACITY (64 * 1024)
 EXT_RAM_BSS_ATTR static char g_json_buffer[HELPER_JSON_BUFFER_CAPACITY];
+EXT_RAM_BSS_ATTR static helper_snapshot_t g_working_snapshot;
 
 typedef struct {
     char *data;
@@ -358,25 +359,43 @@ esp_err_t helper_service_refresh(helper_snapshot_t *out_snapshot)
         return ESP_ERR_INVALID_ARG;
     }
 
-    build_mock_snapshot(out_snapshot);
+    bool had_existing_data = out_snapshot->day_count > 0;
+    if (!had_existing_data) {
+        build_mock_snapshot(out_snapshot);
+    }
 
 #if APP_ENABLE_WIFI
     if (wifi_manager_is_connected()) {
+        helper_snapshot_t *working_snapshot = out_snapshot;
+        if (had_existing_data) {
+            memcpy(&g_working_snapshot, out_snapshot, sizeof(g_working_snapshot));
+            working_snapshot = &g_working_snapshot;
+        }
+
         memset(g_json_buffer, 0, sizeof(g_json_buffer));
         esp_err_t err = fetch_snapshot_json(g_json_buffer, sizeof(g_json_buffer));
         if (err == ESP_OK) {
-            if (overlay_remote_snapshot(g_json_buffer, out_snapshot) == ESP_OK) {
+            if (overlay_remote_snapshot(g_json_buffer, working_snapshot) == ESP_OK) {
+                if (working_snapshot != out_snapshot) {
+                    memcpy(out_snapshot, working_snapshot, sizeof(*out_snapshot));
+                }
                 ESP_LOGI(TAG, "Loaded snapshot from helper service");
                 return ESP_OK;
             }
-            ESP_LOGW(TAG, "Remote JSON parse failed, keeping placeholder snapshot");
+            ESP_LOGW(TAG, "Remote JSON parse failed, keeping previous snapshot");
+        } else {
+            ESP_LOGW(TAG, "Keeping previous snapshot after helper fetch failure");
         }
     } else {
         ESP_LOGI(TAG, "Wi-Fi not connected yet, skipping helper fetch");
     }
 #endif
 
-    ESP_LOGI(TAG, "Using placeholder snapshot until live data is available");
+    if (had_existing_data) {
+        ESP_LOGI(TAG, "Using last known good snapshot");
+    } else {
+        ESP_LOGI(TAG, "Using placeholder snapshot until live data is available");
+    }
     return ESP_OK;
 }
 

@@ -24,9 +24,14 @@ typedef enum {
 
 typedef struct {
     helper_snapshot_t snapshot;
+    helper_snapshot_t last_rendered_snapshot;
     int selected_day_index;
     int selected_item_index;
+    int last_rendered_day_index;
+    int last_rendered_item_index;
     ui_mode_t mode;
+    ui_mode_t last_rendered_mode;
+    char last_wifi_status[24];
     int render_count;
 } app_state_t;
 
@@ -68,6 +73,18 @@ static void ensure_valid_selection(app_state_t *state)
     if (state->selected_item_index >= schedule->item_count) {
         state->selected_item_index = schedule->item_count - 1;
     }
+}
+
+static bool snapshot_visual_equals(const helper_snapshot_t *a, const helper_snapshot_t *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+
+    return a->using_live_data == b->using_live_data &&
+           a->day_count == b->day_count &&
+           memcmp(a->schedules, b->schedules, sizeof(a->schedules)) == 0 &&
+           memcmp(a->overview, b->overview, sizeof(a->overview)) == 0;
 }
 
 static void log_button_strip(const app_state_t *state)
@@ -153,8 +170,21 @@ static void log_right_pane(const app_state_t *state)
     }
 }
 
-static void render_dashboard(const app_state_t *state)
+static void render_dashboard(app_state_t *state)
 {
+    const char *wifi_status = wifi_manager_status_text();
+    bool needs_refresh = (state->render_count == 0) ||
+                         !snapshot_visual_equals(&state->snapshot, &state->last_rendered_snapshot) ||
+                         state->selected_day_index != state->last_rendered_day_index ||
+                         state->selected_item_index != state->last_rendered_item_index ||
+                         state->mode != state->last_rendered_mode ||
+                         strncmp(state->last_wifi_status, wifi_status, sizeof(state->last_wifi_status)) != 0;
+
+    if (!needs_refresh) {
+        ESP_LOGI(TAG, "No visible dashboard changes; skipping E-paper refresh");
+        return;
+    }
+
     char generated_at[32] = {0};
     format_timestamp(state->snapshot.generated_at, generated_at, sizeof(generated_at));
 
@@ -163,13 +193,13 @@ static void render_dashboard(const app_state_t *state)
         .selected_day_index = state->selected_day_index,
         .selected_item_index = state->selected_item_index,
         .detail_mode = (state->mode == UI_MODE_DETAIL),
-        .wifi_status = wifi_manager_status_text(),
+        .wifi_status = wifi_status,
     };
 
     ESP_LOGI(TAG, "============================================================");
     ESP_LOGI(TAG, "T5 Family Calendar | landscape %dx%d", APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
     ESP_LOGI(TAG, "Helper service     | %s", state->snapshot.service_url);
-    ESP_LOGI(TAG, "Wi-Fi status        | %s", wifi_manager_status_text());
+    ESP_LOGI(TAG, "Wi-Fi status        | %s", wifi_status);
     ESP_LOGI(TAG, "Data source         | %s", state->snapshot.using_live_data ? "live helper service" : "waiting/offline");
     ESP_LOGI(TAG, "Last refresh        | %s", generated_at);
     log_button_strip(state);
@@ -177,6 +207,13 @@ static void render_dashboard(const app_state_t *state)
     log_right_pane(state);
     display_layer_render(&request);
     ESP_LOGI(TAG, "Framebuffer checksum | %lu", (unsigned long)display_layer_framebuffer_checksum());
+
+    memcpy(&state->last_rendered_snapshot, &state->snapshot, sizeof(state->snapshot));
+    state->last_rendered_day_index = state->selected_day_index;
+    state->last_rendered_item_index = state->selected_item_index;
+    state->last_rendered_mode = state->mode;
+    snprintf(state->last_wifi_status, sizeof(state->last_wifi_status), "%s", wifi_status ? wifi_status : "unknown");
+    state->render_count++;
 }
 
 static void refresh_snapshot(app_state_t *state)

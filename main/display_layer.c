@@ -235,14 +235,23 @@ static void build_left_agenda(const display_render_request_t *request)
     draw_text(pane_x + 8, pane_y + 32, schedule->day_label, COLOR_BLACK, 2, 24);
     int item_y = pane_y + 60;
 
-    for (int i = 0; i < schedule->item_count && i < 8; ++i) {
+    for (int i = 0; i < schedule->item_count && i < 6; ++i) {
         const calendar_item_t *item = &schedule->items[i];
         bool selected = (i == request->selected_item_index);
-        fill_rect(pane_x + 8, item_y, pane_w - 16, 42, selected ? COLOR_LIGHT : COLOR_WHITE);
-        draw_rect(pane_x + 8, item_y, pane_w - 16, 42, selected ? COLOR_BLACK : COLOR_MID);
-        draw_text(pane_x + 14, item_y + 8, item->start_label, COLOR_BLACK, 2, 8);
-        draw_text(pane_x + 86, item_y + 8, item->title, COLOR_BLACK, 2, 18);
-        item_y += 48;
+        char time_text[32] = {0};
+        if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
+            snprintf(time_text, sizeof(time_text), "ALL DAY");
+        } else if (item->end_label[0] != '\0') {
+            snprintf(time_text, sizeof(time_text), "%s-%s", item->start_label, item->end_label);
+        } else {
+            snprintf(time_text, sizeof(time_text), "%s", item->start_label);
+        }
+
+        fill_rect(pane_x + 8, item_y, pane_w - 16, 56, selected ? COLOR_LIGHT : COLOR_WHITE);
+        draw_rect(pane_x + 8, item_y, pane_w - 16, 56, selected ? COLOR_BLACK : COLOR_MID);
+        draw_text(pane_x + 14, item_y + 6, time_text, COLOR_BLACK, 2, 16);
+        draw_text(pane_x + 14, item_y + 26, item->title, COLOR_BLACK, 2, 22);
+        item_y += 62;
     }
 }
 
@@ -263,13 +272,27 @@ static void build_detail_panel(const display_render_request_t *request)
     int y = APP_TOP_BAR_HEIGHT + 44;
     int w = APP_RIGHT_PANE_WIDTH - 32;
     int h = APP_SCREEN_HEIGHT - APP_TOP_BAR_HEIGHT - 56;
+    char time_text[32] = {0};
+
+    if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
+        snprintf(time_text, sizeof(time_text), "ALL DAY");
+    } else if (item->end_label[0] != '\0') {
+        snprintf(time_text, sizeof(time_text), "%s-%s", item->start_label, item->end_label);
+    } else {
+        snprintf(time_text, sizeof(time_text), "%s", item->start_label);
+    }
 
     fill_rect(x, y, w, h, COLOR_WHITE);
     draw_rect(x, y, w, h, COLOR_BLACK);
     draw_text(x + 10, y + 12, item->title, COLOR_BLACK, 3, 20);
-    draw_text(x + 10, y + 50, item->start_label, COLOR_BLACK, 2, 8);
-    draw_text(x + 90, y + 50, item->source, COLOR_BLACK, 2, 16);
-    draw_text(x + 10, y + 88, item->location[0] ? item->location : "NONE", COLOR_BLACK, 2, 24);
+    draw_text(x + 10, y + 50, "TIME", COLOR_BLACK, 2, 8);
+    draw_text(x + 90, y + 50, time_text, COLOR_BLACK, 2, 22);
+    draw_text(x + 10, y + 82, "SOURCE", COLOR_BLACK, 2, 10);
+    draw_text(x + 90, y + 82, item->source[0] ? item->source : "NONE", COLOR_BLACK, 2, 20);
+    draw_text(x + 10, y + 114, "PLACE", COLOR_BLACK, 2, 8);
+    draw_text(x + 90, y + 114, item->location[0] ? item->location : "NONE", COLOR_BLACK, 2, 24);
+    draw_text(x + 10, y + 146, "DETAIL", COLOR_BLACK, 2, 10);
+    draw_text(x + 10, y + 172, item->detail[0] ? item->detail : "NONE", COLOR_BLACK, 2, 34);
 }
 
 static void dump_ascii_preview(void)
