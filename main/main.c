@@ -11,12 +11,28 @@
 #include "esp_timer.h"
 #include "app_config.h"
 #include "battery_monitor.h"
+#include "board_config.h"
 #include "button_input.h"
 #include "display_layer.h"
 #include "helper_service.h"
 #include "wifi_manager.h"
+#include "esp_sleep.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "t5_calendar";
+
+/* Navigation state persisted in ESP32 RTC slow SRAM across deep sleep */
+typedef struct {
+    uint32_t magic;
+    int32_t  selected_day_index;
+    int32_t  selected_item_index;
+    uint32_t mode;
+    int32_t  render_count;
+} rtc_persistent_t;
+
+#define APP_RTC_MAGIC 0xCA1E4747UL
+
+RTC_DATA_ATTR static rtc_persistent_t s_rtc;
 
 typedef enum {
     UI_MODE_OVERVIEW = 0,
@@ -246,24 +262,22 @@ static void refresh_snapshot(app_state_t *state)
     render_dashboard(state);
 }
 
-static void apply_button_action(app_state_t *state, button_action_t action)
+/* Update navigation state for a button action without triggering a render */
+static void state_apply_button(app_state_t *state, button_action_t action)
 {
     const day_schedule_t *schedule = helper_service_get_day(&state->snapshot, state->selected_day_index);
-
     switch (action) {
         case BUTTON_ACTION_PREV:
-            if (state->mode == UI_MODE_DETAIL && schedule && schedule->item_count > 1) {
+            if (state->mode == UI_MODE_DETAIL && schedule && schedule->item_count > 1)
                 state->selected_item_index--;
-            } else {
+            else
                 state->selected_day_index--;
-            }
             break;
         case BUTTON_ACTION_NEXT:
-            if (state->mode == UI_MODE_DETAIL && schedule && schedule->item_count > 1) {
+            if (state->mode == UI_MODE_DETAIL && schedule && schedule->item_count > 1)
                 state->selected_item_index++;
-            } else {
+            else
                 state->selected_day_index++;
-            }
             break;
         case BUTTON_ACTION_SELECT:
             if (state->mode == UI_MODE_OVERVIEW && schedule && schedule->item_count > 0) {
@@ -278,31 +292,47 @@ static void apply_button_action(app_state_t *state, button_action_t action)
             state->selected_item_index = 0;
             state->mode = UI_MODE_OVERVIEW;
             break;
-        case BUTTON_ACTION_NONE:
         default:
             break;
     }
-
     ensure_valid_selection(state);
+}
+
+static void apply_button_action(app_state_t *state, button_action_t action)
+{
+    state_apply_button(state, action);
     render_dashboard(state);
 }
 
 void app_main(void)
 {
+    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+    const bool first_boot  = (wakeup == ESP_SLEEP_WAKEUP_UNDEFINED);
+    const bool timer_wake  = (wakeup == ESP_SLEEP_WAKEUP_TIMER);
+    const bool button_wake = (wakeup == ESP_SLEEP_WAKEUP_EXT0 ||
+                              wakeup == ESP_SLEEP_WAKEUP_EXT1);
+    (void)timer_wake;   /* used only in log message */
+
     app_state_t *state = &s_state;
     memset(state, 0, sizeof(*state));
-    int64_t last_refresh_us = 0;
-    int64_t last_clock_us = 0;
 
-    ESP_LOGI(TAG, "Starting T5 Family Calendar foundation for the ESP32 WROVER-E board");
-    ESP_LOGI(TAG, "Snapshot storage reserved in static memory: %u bytes", (unsigned)sizeof(helper_snapshot_t));
+    ESP_LOGI(TAG, "== T5 Calendar == wake: %s",
+             first_boot ? "first-boot" : timer_wake ? "timer" : "button");
 
-    esp_err_t wdt_err = esp_task_wdt_deinit();
-    if (wdt_err == ESP_OK) {
-        ESP_LOGW(TAG, "Task watchdog disabled during hardware display bring-up");
+    /* Restore navigation state from RTC SRAM (survives deep sleep) */
+    if (!first_boot && s_rtc.magic == APP_RTC_MAGIC) {
+        state->selected_day_index  = (int)s_rtc.selected_day_index;
+        state->selected_item_index = (int)s_rtc.selected_item_index;
+        state->mode                = (ui_mode_t)s_rtc.mode;
+        state->render_count        = (int)s_rtc.render_count;
+        ESP_LOGI(TAG, "RTC state: day=%d item=%d mode=%d renders=%d",
+                 state->selected_day_index, state->selected_item_index,
+                 (int)state->mode, state->render_count);
     }
 
-    esp_err_t display_err = display_layer_init();
+    esp_task_wdt_deinit();
+
+    esp_err_t display_err = display_layer_init(/*skip_splash=*/!first_boot);
     if (display_err != ESP_OK) {
         ESP_LOGE(TAG, "Display init failed: %s", esp_err_to_name(display_err));
     }
@@ -313,72 +343,87 @@ void app_main(void)
     ESP_ERROR_CHECK(button_input_init());
     ESP_ERROR_CHECK(helper_service_init(NULL));
 
-    state->selected_day_index = 0;
-    state->selected_item_index = 0;
-    state->mode = UI_MODE_OVERVIEW;
-    state->render_count = 0;
-
-    /* Populate snapshot with placeholder data so the struct is valid, but do NOT render yet —
-     * the boot screen should remain visible until we have live data or exhaust all connection
-     * attempts.  render_dashboard() is called explicitly below once we know what we have. */
+    /* Seed with placeholder data so snapshot is always valid even if WiFi fails */
     ESP_ERROR_CHECK(helper_service_refresh(&state->snapshot));
     ensure_valid_selection(state);
-    last_refresh_us = esp_timer_get_time();
 
 #if APP_ENABLE_WIFI
     esp_err_t wifi_err = wifi_manager_init();
     if (wifi_err == ESP_OK && wifi_manager_is_configured()) {
-        if (wifi_manager_wait_for_connection(10000) == ESP_OK) {
+        int timeout_ms = first_boot ? 15000 : 10000;
+        if (wifi_manager_wait_for_connection(timeout_ms) == ESP_OK) {
             wifi_manager_sync_time(5000);
-            refresh_snapshot(state);
-            last_refresh_us = esp_timer_get_time();
-            for (int retry = 0; retry < 4 && !state->snapshot.using_live_data; retry++) {
-                ESP_LOGI(TAG, "Live data not ready, retrying in 8s (attempt %d/4)...", retry + 1);
-                vTaskDelay(pdMS_TO_TICKS(8000));
-                refresh_snapshot(state);
-                last_refresh_us = esp_timer_get_time();
+            int retries = first_boot ? 4 : 1;
+            for (int r = 0; r < retries; r++) {
+                helper_service_refresh(&state->snapshot);
+                ensure_valid_selection(state);
+                if (state->snapshot.using_live_data) break;
+                if (r < retries - 1) {
+                    ESP_LOGI(TAG, "Live data not ready, retrying in 8s (%d/%d)...", r + 1, retries);
+                    vTaskDelay(pdMS_TO_TICKS(8000));
+                }
             }
         } else {
-            ESP_LOGW(TAG, "Wi-Fi connection timed out; continuing with cached/mock snapshot");
-            refresh_snapshot(state);   /* first render: show offline state */
-            last_refresh_us = esp_timer_get_time();
+            ESP_LOGW(TAG, "Wi-Fi timed out; rendering with cached snapshot");
         }
     } else if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi init failed: %s; continuing offline", esp_err_to_name(wifi_err));
-        refresh_snapshot(state);       /* first render: show offline state */
-        last_refresh_us = esp_timer_get_time();
+        ESP_LOGW(TAG, "Wi-Fi init failed: %s", esp_err_to_name(wifi_err));
     }
 #else
     ESP_LOGW(TAG, "Wi-Fi disabled");
-    refresh_snapshot(state);           /* first render: show mock/offline state */
-    last_refresh_us = esp_timer_get_time();
 #endif
 
-    while (1) {
-        button_action_t action = button_input_poll();
-        if (action != BUTTON_ACTION_NONE) {
-            ESP_LOGI(TAG, "Button action: %s", button_input_name(action));
-            apply_button_action(state, action);
-        }
-
-        int64_t now_us = esp_timer_get_time();
-
-        /* Full data + screen refresh every 5 minutes */
-        if ((now_us - last_refresh_us) > (300LL * 1000000LL)) {
-            refresh_snapshot(state);
-            last_refresh_us = now_us;
-            last_clock_us = now_us;   /* full render already drew the clock */
-        }
-        /* Partial clock-only update every 60 seconds (no epd_clear, no artifacts) */
-        else if ((now_us - last_clock_us) > (60LL * 1000000LL)) {
-            char datetime_buf[24];
-            time_t now = time(NULL);
-            struct tm *tm_info = localtime(&now);
-            strftime(datetime_buf, sizeof(datetime_buf), "%a %d %b %Y %H:%M", tm_info);
-            display_layer_update_clock(datetime_buf);
-            last_clock_us = now_us;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(120));
+    /* Apply the button action that caused this wake, before the first render */
+    button_action_t wake_action = BUTTON_ACTION_NONE;
+    if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
+        wake_action = BUTTON_ACTION_SELECT;              /* GPIO39 = SELECT */
+    } else if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
+        wake_action = BUTTON_ACTION_NEXT;   /* only NEXT (GPIO34) is on EXT1 */
     }
+    if (wake_action != BUTTON_ACTION_NONE) {
+        ESP_LOGI(TAG, "Wake button action: %s", button_input_name(wake_action));
+        state_apply_button(state, wake_action);
+    }
+
+    render_dashboard(state);
+
+    /* Interactive window: stay awake and respond to buttons while user is active */
+    if (button_wake) {
+        int64_t last_activity = esp_timer_get_time();
+        ESP_LOGI(TAG, "Interactive window (%ds inactivity timeout)", APP_INTERACTIVE_TIMEOUT_S);
+        while ((esp_timer_get_time() - last_activity) <
+               ((int64_t)APP_INTERACTIVE_TIMEOUT_S * 1000000LL)) {
+            button_action_t act = button_input_poll();
+            if (act != BUTTON_ACTION_NONE) {
+                ESP_LOGI(TAG, "Button: %s", button_input_name(act));
+                apply_button_action(state, act);
+                last_activity = esp_timer_get_time();
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        ESP_LOGI(TAG, "Interactive timeout, entering deep sleep");
+    }
+
+    /* Persist navigation state to RTC SRAM before deep sleep */
+    s_rtc.magic              = APP_RTC_MAGIC;
+    s_rtc.selected_day_index  = (int32_t)state->selected_day_index;
+    s_rtc.selected_item_index = (int32_t)state->selected_item_index;
+    s_rtc.mode               = (uint32_t)state->mode;
+    s_rtc.render_count       = (int32_t)state->render_count;
+
+#if APP_ENABLE_WIFI
+    wifi_manager_stop();
+#endif
+
+    /* Configure wakeup sources:
+     *   Timer  - refresh data every APP_SLEEP_REFRESH_S seconds
+     *   EXT0   - GPIO39 (SELECT) wakes on LOW (button pressed)
+     *   EXT1   - GPIO34 (NEXT) wakes on LOW (single-pin ALL_LOW = that pin LOW) */
+    esp_sleep_enable_timer_wakeup((uint64_t)APP_SLEEP_REFRESH_S * 1000000ULL);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_39, 0);
+    esp_sleep_enable_ext1_wakeup(1ULL << BOARD_BUTTON_NEXT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+
+    ESP_LOGI(TAG, "Deep sleep for %ds (SELECT or NEXT wake early)", APP_SLEEP_REFRESH_S);
+    vTaskDelay(pdMS_TO_TICKS(50));   /* allow log output to flush */
+    esp_deep_sleep_start();
 }

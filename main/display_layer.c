@@ -579,7 +579,7 @@ static void dump_ascii_preview(void)
 #endif
 }
 
-esp_err_t display_layer_init(void)
+esp_err_t display_layer_init(bool skip_splash)
 {
     s_framebuffer_size = (APP_SCREEN_WIDTH * APP_SCREEN_HEIGHT) / 2;
     s_framebuffer = (uint8_t *)heap_caps_malloc(s_framebuffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -593,25 +593,26 @@ esp_err_t display_layer_init(void)
     memset(s_framebuffer, 0xFF, s_framebuffer_size);
     ESP_LOGI(TAG, "Display framebuffer allocated: %u bytes", (unsigned)s_framebuffer_size);
 
-    /* Splash screen: light background so the epd_clear() before the first calendar
-     * render produces no visible flash (clear-to-white on a white screen is invisible). */
-    fill_rect(0, 0, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT, COLOR_WHITE);
-    fill_rect(0, 0, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
-    fill_rect(0, APP_SCREEN_HEIGHT - 6, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
-    /* Two FiraSansSmall lines centred on the screen.
-     * advance_y=30 → two-line block is ~55px; centre around mid point. */
-    draw_fira_small(APP_SCREEN_WIDTH / 2 - 80, APP_SCREEN_HEIGHT / 2 - 35, "T5 Calendar");
-    draw_fira_small(APP_SCREEN_WIDTH / 2 - 90, APP_SCREEN_HEIGHT / 2 - 5,  "Connecting...");
-
     ESP_LOGI(TAG, "Initializing physical E-paper panel");
     epd_init();
     s_epd_ready = true;
 
-    epd_poweron();
-    epd_clear();
-    epd_draw_grayscale_image(epd_full_screen(), s_framebuffer);
-    epd_poweroff();
-    ESP_LOGI(TAG, "Boot test screen pushed to physical panel");
+    if (!skip_splash) {
+        /* Splash screen: light background so the epd_clear() before the first calendar
+         * render produces no visible flash (clear-to-white on a white screen is invisible). */
+        fill_rect(0, 0, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT, COLOR_WHITE);
+        fill_rect(0, 0, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
+        fill_rect(0, APP_SCREEN_HEIGHT - 6, APP_SCREEN_WIDTH, 6, COLOR_BLACK);
+        draw_fira_small(APP_SCREEN_WIDTH / 2 - 80, APP_SCREEN_HEIGHT / 2 - 35, "T5 Calendar");
+        draw_fira_small(APP_SCREEN_WIDTH / 2 - 90, APP_SCREEN_HEIGHT / 2 - 5,  "Connecting...");
+        epd_poweron();
+        epd_clear();
+        epd_draw_grayscale_image(epd_full_screen(), s_framebuffer);
+        epd_poweroff();
+        ESP_LOGI(TAG, "Boot splash pushed to physical panel");
+    } else {
+        ESP_LOGI(TAG, "Skip splash (wakeup from deep sleep)");
+    }
     return ESP_OK;
 }
 

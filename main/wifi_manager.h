@@ -9,6 +9,7 @@ bool wifi_manager_is_connected(void);
 bool wifi_manager_is_configured(void);
 esp_err_t wifi_manager_wait_for_connection(int timeout_ms);
 esp_err_t wifi_manager_sync_time(int timeout_ms);
+esp_err_t wifi_manager_stop(void);
 const char *wifi_manager_status_text(void);
 
 #endif

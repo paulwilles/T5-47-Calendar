@@ -16,7 +16,7 @@ typedef struct {
     bool full_refresh;   /* true = epd_clear() before draw (data changed); false = fast redraw (navigation only) */
 } display_render_request_t;
 
-esp_err_t display_layer_init(void);
+esp_err_t display_layer_init(bool skip_splash);
 void display_layer_render(const display_render_request_t *request);
 void display_layer_update_clock(const char *datetime_str);
 uint32_t display_layer_framebuffer_checksum(void);

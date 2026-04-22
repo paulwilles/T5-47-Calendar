@@ -153,6 +153,20 @@ esp_err_t wifi_manager_wait_for_connection(int timeout_ms)
     return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
+esp_err_t wifi_manager_stop(void)
+{
+    if (!s_wifi_started) {
+        return ESP_OK;
+    }
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_wifi_stop();
+    s_wifi_started = false;
+    s_wifi_connected = false;
+    ESP_LOGI(TAG, "Wi-Fi stopped");
+    return ESP_OK;
+}
+
 esp_err_t wifi_manager_sync_time(int timeout_ms)
 {
     if (!s_wifi_connected) {
@@ -161,6 +175,12 @@ esp_err_t wifi_manager_sync_time(int timeout_ms)
 
     setenv("TZ", APP_TIME_ZONE, 1);
     tzset();
+
+    /* ESP32 RTC maintains time across deep sleep — skip SNTP if already valid */
+    if (time(NULL) > 1700000000LL) {
+        ESP_LOGI(TAG, "Time already valid (RTC), skipping SNTP");
+        return ESP_OK;
+    }
 
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, APP_NTP_SERVER_1);
