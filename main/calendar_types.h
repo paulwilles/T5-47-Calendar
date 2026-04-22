@@ -14,6 +14,8 @@ typedef struct {
     char id[APP_ID_LEN];
     calendar_item_type_t type;
     bool all_day;
+    bool continues_from_prev_day;
+    bool continues_next_day;
     bool completed;
     char title[APP_TITLE_LEN];
     char start_label[APP_TIME_LEN];

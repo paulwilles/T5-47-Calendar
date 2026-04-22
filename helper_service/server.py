@@ -260,6 +260,76 @@ def _normalize_event(event: dict[str, Any], source_name: str) -> dict[str, Any]:
     }
 
 
+def _normalize_event_for_day(event: dict[str, Any], source_name: str,
+                             current_date: date, day_start: datetime,
+                             day_end: datetime) -> dict[str, Any] | None:
+    start_info = event.get("start", {})
+    end_info = event.get("end", {})
+    all_day = "date" in start_info and not start_info.get("dateTime")
+
+    if all_day:
+        start_date_text = start_info.get("date")
+        end_date_text = end_info.get("date")
+        if not start_date_text or not end_date_text:
+            return _normalize_event(event, source_name)
+
+        start_date = date.fromisoformat(start_date_text)
+        end_exclusive = date.fromisoformat(end_date_text)
+        end_date = end_exclusive - timedelta(days=1)
+        if current_date < start_date or current_date > end_date:
+            return None
+
+        return {
+            "id": f"evt-{event.get('id', 'unknown')}",
+            "type": "event",
+            "title": event.get("summary") or "Untitled event",
+            "start": "All day",
+            "end": "",
+            "all_day": True,
+            "continues_from_prev_day": current_date > start_date,
+            "continues_next_day": current_date < end_date,
+            "completed": False,
+            "source": source_name,
+            "location": event.get("location", ""),
+            "detail": event.get("description", "")[:500],
+        }
+
+    start_dt = _parse_google_dt(start_info.get("dateTime"))
+    end_dt = _parse_google_dt(end_info.get("dateTime"))
+    if start_dt is None:
+        return _normalize_event(event, source_name)
+    if end_dt is None or end_dt <= start_dt:
+        end_dt = start_dt
+
+    if end_dt <= day_start or start_dt >= day_end:
+        return None
+
+    visible_start = max(start_dt, day_start)
+    visible_end = min(end_dt, day_end)
+    continues_from_prev_day = start_dt < day_start
+    continues_next_day = end_dt > day_end
+
+    start_label = visible_start.strftime("%H:%M")
+    end_label = visible_end.strftime("%H:%M")
+    if continues_next_day and visible_end == day_end:
+        end_label = "24:00"
+
+    return {
+        "id": f"evt-{event.get('id', 'unknown')}",
+        "type": "event",
+        "title": event.get("summary") or "Untitled event",
+        "start": start_label,
+        "end": end_label,
+        "all_day": False,
+        "continues_from_prev_day": continues_from_prev_day,
+        "continues_next_day": continues_next_day,
+        "completed": False,
+        "source": source_name,
+        "location": event.get("location", ""),
+        "detail": event.get("description", "")[:500],
+    }
+
+
 def _normalize_task(task: dict[str, Any], source_name: str) -> dict[str, Any]:
     return {
         "id": f"tsk-{task.get('id', 'unknown')}",
@@ -321,7 +391,15 @@ def build_google_data() -> dict[str, Any]:
                 maxResults=50,
             ).execute()
             for event in events.get("items", []):
-                normalized = _normalize_event(event, calendar_names.get(calendar_id, calendar_id))
+                normalized = _normalize_event_for_day(
+                    event,
+                    calendar_names.get(calendar_id, calendar_id),
+                    current_date,
+                    day_start,
+                    day_end,
+                )
+                if normalized is None:
+                    continue
                 items.append(normalized)
                 details[normalized["id"]] = normalized
 

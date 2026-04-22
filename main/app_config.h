@@ -27,7 +27,7 @@
 #define APP_ENABLE_ASCII_PREVIEW 0
 
 /* Deep sleep configuration */
-#define APP_SLEEP_REFRESH_S       300  /* wake every 5 min to refresh data + clock */
+#define APP_SLEEP_REFRESH_S        60  /* wake every minute to refresh clock */
 #define APP_INTERACTIVE_TIMEOUT_S  30  /* stay awake 30s after button wake */
 
 /* Edit these values for your home network when ready to test on hardware. */

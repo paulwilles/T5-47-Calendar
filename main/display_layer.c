@@ -182,6 +182,22 @@ static void draw_fira_small_white(int x, int top_y, const char *text);
 static void draw_fira_small_truncated(int x, int top_y, const char *text, int max_w);
 static void draw_fira_small_white_truncated(int x, int top_y, const char *text, int max_w);
 
+/* Draw the button strip at the given vertical offset.
+ * Each label is positioned independently so WAKE aligns exactly where NEXT was,
+ * regardless of proportional-font kerning.  Positions are empirical estimates for
+ * FiraSansSmall (12pt/150dpi) and can be tweaked if the display shows misalignment.
+ * When sleep_mode=true: PREV is hidden and NEXT becomes WAKE. */
+static void draw_button_strip(int ty, bool detail_mode, bool sleep_mode)
+{
+    draw_fira_small_white(240, ty, "RST");
+    draw_fira_small_white(296, ty, "BOOT");
+    if (!sleep_mode) {
+        draw_fira_small_white(374, ty, "PREV");
+    }
+    draw_fira_small_white(448, ty, sleep_mode ? "WAKE" : "NEXT");
+    draw_fira_small_white(520, ty, detail_mode ? "BACK" : "SEL");
+}
+
 static void build_top_bar(const display_render_request_t *request)
 {
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
@@ -192,7 +208,7 @@ static void build_top_bar(const display_render_request_t *request)
     if (request->wifi_status) {
         draw_fira_small_white(12, ty, request->wifi_status);
     }
-    draw_fira_small_white(240, ty, "RST  BOOT  PREV  NEXT  SEL");
+    draw_button_strip(ty, request->detail_mode, /*sleep_mode=*/false);
     if (request->datetime_str) {
         draw_fira_small_white(CLOCK_X + 4, ty, request->datetime_str);
     }
@@ -304,6 +320,45 @@ static void draw_fira_small_white_truncated(int x, int top_y, const char *text, 
 /* Draw FiraSans text with word-wrap.  Wraps at word boundaries to fit      *
  * within max_w pixels.  max_lines <= 0 means unlimited.                   *
  * Returns the y coordinate of the row after the last drawn line.          */
+static int draw_fira_small_wrapped(int x, int top_y, const char *text, int max_w, int max_lines)
+{
+    if (!text || !text[0] || !s_framebuffer) return top_y;
+    char buf[256];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    int line = 0;
+    char *head = buf;
+    const int line_h = (int)FiraSansSmall.advance_y;
+
+    while (*head && (max_lines <= 0 || line < max_lines)) {
+        char *best = head;
+        char *scan = head;
+        while (*scan) {
+            char *wend = scan;
+            while (*wend && *wend != ' ') wend++;
+            char sv = *wend; *wend = '\0';
+            int32_t tx = x, ty = 0, x1, y1, w, h;
+            get_text_bounds(&FiraSansSmall, head, &tx, &ty, &x1, &y1, &w, &h, NULL);
+            *wend = sv;
+            if (w > max_w) {
+                if (best == head) best = wend;
+                break;
+            }
+            best = wend;
+            if (!sv) break;
+            scan = wend + 1;
+        }
+        char sv = *best; *best = '\0';
+        draw_fira_small(x, top_y + line * line_h, head);
+        *best = sv;
+        line++;
+        head = best;
+        if (*head == ' ') head++;
+    }
+    return top_y + line * line_h;
+}
+
 static int draw_fira_wrapped(int x, int top_y, const char *text, int max_w, int max_lines)
 {
     if (!text || !text[0] || !s_framebuffer) return top_y;
@@ -343,6 +398,179 @@ static int draw_fira_wrapped(int x, int top_y, const char *text, int max_w, int 
     return top_y + line * line_h;
 }
 
+static bool schedule_has_item_with_id_and_flags(const day_schedule_t *schedule,
+                                                const char *id,
+                                                bool needs_from_prev,
+                                                bool needs_to_next)
+{
+    if (!schedule || !id || !id[0]) {
+        return false;
+    }
+
+    for (int i = 0; i < schedule->item_count; ++i) {
+        const calendar_item_t *item = &schedule->items[i];
+        if (strcmp(item->id, id) != 0) {
+            continue;
+        }
+        if (needs_from_prev && !item->continues_from_prev_day) {
+            continue;
+        }
+        if (needs_to_next && !item->continues_next_day) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+static void draw_multiday_marker(int x, int y, int cell_w, bool selected,
+                                 bool has_left_link, bool has_right_link, bool has_continuous_link)
+{
+    if (!has_left_link && !has_right_link) {
+        return;
+    }
+
+    const uint8_t color = selected ? COLOR_WHITE : COLOR_DARK;
+    const int bar_y = y + 4;
+    const int bar_h = 3;
+    const int inner_left = x + 1;
+    const int inner_right = x + cell_w - 1; /* exclusive right edge for fill_rect */
+    const int edge_span = (cell_w * 2) / 5; /* 40% of cell width: shorter horizontal marker */
+
+    if (has_continuous_link) {
+        fill_rect(inner_left, bar_y, inner_right - inner_left, bar_h, color);
+        return;
+    }
+
+    if (has_left_link) {
+        int left_w = edge_span;
+        if (left_w > (inner_right - inner_left)) {
+            left_w = inner_right - inner_left;
+        }
+        if (left_w > 0) {
+            fill_rect(inner_left, bar_y, left_w, bar_h, color);
+        }
+    }
+    if (has_right_link) {
+        int right_w = edge_span;
+        if (right_w > (inner_right - inner_left)) {
+            right_w = inner_right - inner_left;
+        }
+        int right_x = inner_right - right_w;
+        if (right_w > 0) {
+            fill_rect(right_x, bar_y, right_w, bar_h, color);
+        }
+    }
+}
+
+static const calendar_item_t *find_item_by_id_on_day(const helper_snapshot_t *snapshot,
+                                                     int day_index,
+                                                     const char *id)
+{
+    if (!snapshot || !id || !id[0] || day_index < 0 || day_index >= snapshot->day_count) {
+        return NULL;
+    }
+    const day_schedule_t *schedule = &snapshot->schedules[day_index];
+    for (int i = 0; i < schedule->item_count; ++i) {
+        if (strcmp(schedule->items[i].id, id) == 0) {
+            return &schedule->items[i];
+        }
+    }
+    return NULL;
+}
+
+static void append_day_time(char *buf, size_t len,
+                            const helper_snapshot_t *snapshot,
+                            int day_index,
+                            const char *time_label)
+{
+    if (!buf || len == 0) return;
+    if (!snapshot || day_index < 0 || day_index >= snapshot->day_count) {
+        snprintf(buf, len, "%s", time_label ? time_label : "");
+        return;
+    }
+    const overview_day_t *day = &snapshot->overview[day_index];
+    if (!day->weekday[0]) {
+        snprintf(buf, len, "%s", time_label ? time_label : "");
+        return;
+    }
+    if (time_label && time_label[0]) {
+        snprintf(buf, len, "%s %u %s", day->weekday, day->day_of_month, time_label);
+    } else {
+        snprintf(buf, len, "%s %u", day->weekday, day->day_of_month);
+    }
+}
+
+static void format_item_time_range(const display_render_request_t *request,
+                                   const calendar_item_t *item,
+                                   char *buf,
+                                   size_t len,
+                                   bool compact)
+{
+    if (!buf || len == 0) return;
+    buf[0] = '\0';
+
+    if (!item) {
+        return;
+    }
+
+    const int day_index = request ? request->selected_day_index : -1;
+    const helper_snapshot_t *snapshot = request ? request->snapshot : NULL;
+
+    if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
+        if (item->continues_from_prev_day && item->continues_next_day) {
+            snprintf(buf, len, compact ? "ALL DAY CONT." : "All day (cont.)");
+        } else if (item->continues_from_prev_day) {
+            snprintf(buf, len, compact ? "<- ALL DAY" : "<- All day");
+        } else if (item->continues_next_day) {
+            snprintf(buf, len, compact ? "ALL DAY ->" : "All day ->");
+        } else {
+            snprintf(buf, len, "%s", compact ? "ALL DAY" : "All day");
+        }
+        return;
+    }
+
+    if (item->continues_from_prev_day && item->continues_next_day) {
+        char prev_dt[24] = {0};
+        char next_dt[24] = {0};
+        const calendar_item_t *prev_item = find_item_by_id_on_day(snapshot, day_index - 1, item->id);
+        const calendar_item_t *next_item = find_item_by_id_on_day(snapshot, day_index + 1, item->id);
+        append_day_time(prev_dt, sizeof(prev_dt), snapshot, day_index - 1,
+                        (prev_item && prev_item->start_label[0]) ? prev_item->start_label : NULL);
+        append_day_time(next_dt, sizeof(next_dt), snapshot, day_index + 1,
+                        (next_item && next_item->end_label[0]) ? next_item->end_label : NULL);
+        if (prev_dt[0] && next_dt[0]) {
+            snprintf(buf, len, "%s -> %s", prev_dt, next_dt);
+        } else {
+            snprintf(buf, len, compact ? "<- CONT. ->" : "<- continues ->");
+        }
+    } else if (item->continues_from_prev_day) {
+        const calendar_item_t *prev_item = find_item_by_id_on_day(snapshot, day_index - 1, item->id);
+        char prev_dt[24] = {0};
+        append_day_time(prev_dt, sizeof(prev_dt), snapshot, day_index - 1,
+                        (prev_item && prev_item->start_label[0]) ? prev_item->start_label : NULL);
+        if (prev_dt[0] && item->end_label[0]) {
+            snprintf(buf, len, "%s -> %s", prev_dt, item->end_label);
+        } else {
+            snprintf(buf, len, item->end_label[0] ? "<- %s" : "<-", item->end_label);
+        }
+    } else if (item->continues_next_day) {
+        const calendar_item_t *next_item = find_item_by_id_on_day(snapshot, day_index + 1, item->id);
+        char next_dt[24] = {0};
+        append_day_time(next_dt, sizeof(next_dt), snapshot, day_index + 1,
+                        (next_item && next_item->end_label[0]) ? next_item->end_label : NULL);
+        if (next_dt[0] && item->start_label[0]) {
+            snprintf(buf, len, "%s -> %s", item->start_label, next_dt);
+        } else {
+            snprintf(buf, len, item->start_label[0] ? "%s ->" : "->", item->start_label);
+        }
+    } else if (item->end_label[0] != '\0') {
+        snprintf(buf, len, compact ? "%s-%s" : "%s - %s", item->start_label, item->end_label);
+    } else {
+        snprintf(buf, len, "%s", item->start_label);
+    }
+}
+
 static void build_overview_grid(const display_render_request_t *request)
 {
     int origin_x = APP_LEFT_PANE_WIDTH + 8;
@@ -376,10 +604,40 @@ static void build_overview_grid(const display_render_request_t *request)
             }
 
             const overview_day_t *day = &request->snapshot->overview[index];
+            const day_schedule_t *schedule = &request->snapshot->schedules[index];
+            bool span_from_prev = false;
+            bool span_to_next = false;
+            bool span_continuous = false;
+            const day_schedule_t *prev_schedule = (index > 0) ? &request->snapshot->schedules[index - 1] : NULL;
+            const day_schedule_t *next_schedule =
+                (index + 1 < request->snapshot->day_count) ? &request->snapshot->schedules[index + 1] : NULL;
+            for (int item_index = 0; item_index < schedule->item_count; ++item_index) {
+                const calendar_item_t *item = &schedule->items[item_index];
+                bool links_left = false;
+                bool links_right = false;
+
+                if (item->continues_from_prev_day &&
+                    schedule_has_item_with_id_and_flags(prev_schedule, item->id, false, true)) {
+                    span_from_prev = true;
+                    links_left = true;
+                }
+
+                if (item->continues_next_day &&
+                    schedule_has_item_with_id_and_flags(next_schedule, item->id, true, false)) {
+                    span_to_next = true;
+                    links_right = true;
+                }
+
+                if (links_left && links_right) {
+                    span_continuous = true;
+                }
+            }
 
             /* Fill cell interior */
             fill_rect(x + 1, y + 1, cell_w - 2, cell_h - 2,
                       selected ? COLOR_DARK : COLOR_WHITE);
+            draw_multiday_marker(x + 1, y + 1, cell_w - 2, selected,
+                                 span_from_prev, span_to_next, span_continuous);
 
             /* Show month + year on the first visible cell (index 0) and
              * on any cell whose day_of_month is 1 (start of a new month). */
@@ -469,17 +727,12 @@ static void build_left_agenda(const display_render_request_t *request)
     int item_y = items_top + 2;
     for (int i = 0; i < schedule->item_count && i < MAX_ITEMS; ++i) {
         const calendar_item_t *item = &schedule->items[i];
-        bool selected = (i == request->selected_item_index);
+        /* Only highlight the selected item when in detail mode; in overview mode all items are unselected */
+        bool selected = request->detail_mode && (i == request->selected_item_index);
 
         /* Line 1: time range */
-        char time_text[40] = {0};
-        if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
-            snprintf(time_text, sizeof(time_text), "All day");
-        } else if (item->end_label[0] != '\0') {
-            snprintf(time_text, sizeof(time_text), "%s - %s", item->start_label, item->end_label);
-        } else {
-            snprintf(time_text, sizeof(time_text), "%s", item->start_label);
-        }
+        char time_text[64] = {0};
+        format_item_time_range(request, item, time_text, sizeof(time_text), false);
 
         fill_rect(pane_x + 4, item_y, pane_w - 8, ITEM_H, selected ? COLOR_DARK : COLOR_WHITE);
         draw_rect(pane_x + 4, item_y, pane_w - 8, ITEM_H, selected ? COLOR_BLACK : COLOR_MID);
@@ -513,13 +766,7 @@ static void build_detail_panel(const display_render_request_t *request)
     int h = APP_SCREEN_HEIGHT - APP_TOP_BAR_HEIGHT - 56;
     char time_text[32] = {0};
 
-    if (item->all_day || strcmp(item->start_label, "Any") == 0 || item->start_label[0] == '\0') {
-        snprintf(time_text, sizeof(time_text), "ALL DAY");
-    } else if (item->end_label[0] != '\0') {
-        snprintf(time_text, sizeof(time_text), "%s-%s", item->start_label, item->end_label);
-    } else {
-        snprintf(time_text, sizeof(time_text), "%s", item->start_label);
-    }
+    format_item_time_range(request, item, time_text, sizeof(time_text), true);
 
     fill_rect(x, y, w, h, COLOR_WHITE);
     draw_rect(x, y, w, h, COLOR_BLACK);
@@ -530,25 +777,25 @@ static void build_detail_panel(const display_render_request_t *request)
     /* Horizontal rule below title */
     draw_hline(x + 12, field_y - 4, w - 24, COLOR_MID);
 
-    /* Fields: small block-font label on the left, FiraSans value on the right */
-    const int LABEL_W = 100;
-    const int ROW_H = (int)FiraSans.advance_y + 4;
+    /* Fields: small block-font label on the left, FiraSansSmall value on the right */
+    const int LABEL_W = 80;
+    const int ROW_H = (int)FiraSansSmall.advance_y + 4;
 
-    draw_text(x + 12, field_y + 2,        "TIME",   COLOR_DARK, 2, 8);
-    draw_fira(x + 12 + LABEL_W, field_y,  time_text);
+    draw_text(x + 12, field_y + 2,             "TIME",   COLOR_DARK, 2, 8);
+    draw_fira_small(x + 12 + LABEL_W, field_y, time_text);
     field_y += ROW_H;
 
-    draw_text(x + 12, field_y + 2,        "SOURCE", COLOR_DARK, 2, 8);
-    draw_fira(x + 12 + LABEL_W, field_y,  item->source[0]   ? item->source   : "None");
+    draw_text(x + 12, field_y + 2,             "SOURCE", COLOR_DARK, 2, 8);
+    draw_fira_small(x + 12 + LABEL_W, field_y, item->source[0]   ? item->source   : "None");
     field_y += ROW_H;
 
-    draw_text(x + 12, field_y + 2,        "PLACE",  COLOR_DARK, 2, 8);
-    draw_fira(x + 12 + LABEL_W, field_y,  item->location[0] ? item->location : "None");
+    draw_text(x + 12, field_y + 2,             "PLACE",  COLOR_DARK, 2, 8);
+    draw_fira_small(x + 12 + LABEL_W, field_y, item->location[0] ? item->location : "None");
     field_y += ROW_H;
 
-    draw_text(x + 12, field_y + 2,        "NOTES",  COLOR_DARK, 2, 8);
-    draw_fira_wrapped(x + 12 + LABEL_W, field_y, item->detail[0] ? item->detail : "None",
-                      w - 24 - LABEL_W, 3);
+    draw_text(x + 12, field_y + 2,             "NOTES",  COLOR_DARK, 2, 8);
+    draw_fira_small_wrapped(x + 12 + LABEL_W, field_y, item->detail[0] ? item->detail : "None",
+                            w - 24 - LABEL_W, 5);
 }
 
 static void dump_ascii_preview(void)
@@ -616,41 +863,47 @@ esp_err_t display_layer_init(bool skip_splash)
     return ESP_OK;
 }
 
-void display_layer_update_clock(const char *datetime_str)
+void display_layer_update_topbar(const char *datetime_str, const char *wifi_status,
+                                 bool detail_mode, bool sleep_mode)
 {
-    if (!s_framebuffer || !s_epd_ready || !datetime_str) {
+    if (!s_framebuffer || !s_epd_ready) {
         return;
     }
 
-    /* Repaint the clock slot in the framebuffer. */
-    fill_rect(CLOCK_X, 0, CLOCK_W, APP_TOP_BAR_HEIGHT, COLOR_DARK);
-    draw_hline(CLOCK_X, 0, CLOCK_W, COLOR_BLACK);
-    draw_hline(CLOCK_X, APP_TOP_BAR_HEIGHT - 1, CLOCK_W, COLOR_BLACK);
-    draw_fira_small_white(CLOCK_X + 4, 7, datetime_str);
+    /* Rebuild the entire top-bar region in the framebuffer from scratch so it is
+     * correct regardless of the previous framebuffer state (e.g. after init). */
+    const int ty = 7;
+    fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
+    draw_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_BLACK);
+    if (wifi_status && wifi_status[0]) {
+        draw_fira_small_white(12, ty, wifi_status);
+    }
+    draw_button_strip(ty, detail_mode, sleep_mode);
+    if (datetime_str && datetime_str[0]) {
+        fill_rect(CLOCK_X, 0, CLOCK_W, APP_TOP_BAR_HEIGHT, COLOR_DARK);
+        draw_hline(CLOCK_X, 0, CLOCK_W, COLOR_BLACK);
+        draw_hline(CLOCK_X, APP_TOP_BAR_HEIGHT - 1, CLOCK_W, COLOR_BLACK);
+        draw_fira_small_white(CLOCK_X + 4, ty, datetime_str);
+    }
 
-    /* Update the FULL top-bar width so there is no internal boundary and therefore
-     * no gap artefact from the partial clear.  The screen edges (x=0, x=960) are
-     * the only boundaries, which are invisible.
-     * APP_SCREEN_WIDTH (960) is even → row_bytes is an integer. */
-    const int upd_x = 0;
-    const int upd_w = APP_SCREEN_WIDTH;
-    const int upd_h = APP_TOP_BAR_HEIGHT;
-    Rect_t topbar_rect = { .x = upd_x, .y = 0, .width = upd_w, .height = upd_h };
-    const size_t row_bytes = (size_t)upd_w / 2;
-    uint8_t *topbar_buf = malloc(row_bytes * upd_h);
+    /* Extract top-bar rows and push as a partial EPD update */
+    Rect_t topbar_rect = { .x = 0, .y = 0, .width = APP_SCREEN_WIDTH, .height = APP_TOP_BAR_HEIGHT };
+    const size_t row_bytes = (size_t)APP_SCREEN_WIDTH / 2;
+    uint8_t *topbar_buf = malloc(row_bytes * APP_TOP_BAR_HEIGHT);
     if (topbar_buf) {
-        for (int row = 0; row < upd_h; ++row) {
+        for (int row = 0; row < APP_TOP_BAR_HEIGHT; ++row) {
             const uint8_t *src = s_framebuffer + ((size_t)row * APP_SCREEN_WIDTH) / 2;
             memcpy(topbar_buf + (size_t)row * row_bytes, src, row_bytes);
         }
-        ESP_LOGI(TAG, "Clock partial update (full top bar): %s", datetime_str);
+        ESP_LOGI(TAG, "Top-bar update: t=%s sleep=%d detail=%d",
+                 datetime_str ? datetime_str : "-", (int)sleep_mode, (int)detail_mode);
         epd_poweron();
         epd_clear_area_cycles(topbar_rect, 2, 20);
         epd_draw_grayscale_image(topbar_rect, topbar_buf);
         epd_poweroff();
         free(topbar_buf);
     } else {
-        ESP_LOGW(TAG, "Clock partial update skipped: malloc failed");
+        ESP_LOGW(TAG, "Top-bar update skipped: malloc failed");
     }
 }
 

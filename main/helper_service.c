@@ -29,6 +29,8 @@ static void fill_item(calendar_item_t *item,
                       const char *id,
                       calendar_item_type_t type,
                       bool all_day,
+                      bool continues_from_prev_day,
+                      bool continues_next_day,
                       bool completed,
                       const char *title,
                       const char *start_label,
@@ -45,6 +47,8 @@ static void fill_item(calendar_item_t *item,
     snprintf(item->id, sizeof(item->id), "%s", id ? id : "");
     item->type = type;
     item->all_day = all_day;
+    item->continues_from_prev_day = continues_from_prev_day;
+    item->continues_next_day = continues_next_day;
     item->completed = completed;
     snprintf(item->title, sizeof(item->title), "%s", title ? title : "");
     snprintf(item->start_label, sizeof(item->start_label), "%s", start_label ? start_label : "");
@@ -83,16 +87,16 @@ static void build_day_schedule(day_schedule_t *schedule, int day_index)
 
     if (day_index == 0) {
         schedule->item_count = 4;
-        fill_item(&schedule->items[0], "evt-001", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[0], "evt-001", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "School run", "08:15", "08:45", "Local school", "Family",
                   "Morning school drop-off for the children.");
-        fill_item(&schedule->items[1], "evt-002", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[1], "evt-002", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Project review", "10:00", "11:00", "Home office", "Work",
                   "Weekly review call with action items and follow-ups.");
-        fill_item(&schedule->items[2], "tsk-001", CALENDAR_ITEM_TASK, true, false,
+        fill_item(&schedule->items[2], "tsk-001", CALENDAR_ITEM_TASK, true, false, false, false,
                   "Order groceries", "Any", "", "", "Shared Tasks",
                   "Place the weekly grocery order before 5pm.");
-        fill_item(&schedule->items[3], "evt-003", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[3], "evt-003", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Football practice", "17:30", "18:30", "Sports centre", "Family",
                   "Take boots and water bottle.");
         return;
@@ -100,13 +104,13 @@ static void build_day_schedule(day_schedule_t *schedule, int day_index)
 
     if (day_index == 1) {
         schedule->item_count = 3;
-        fill_item(&schedule->items[0], "evt-004", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[0], "evt-004", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Dentist", "09:00", "09:30", "High Street Dental", "Personal",
                   "Routine checkup appointment.");
-        fill_item(&schedule->items[1], "tsk-002", CALENDAR_ITEM_TASK, true, false,
+        fill_item(&schedule->items[1], "tsk-002", CALENDAR_ITEM_TASK, true, false, false, false,
                   "Pay utility bill", "Any", "", "", "Admin",
                   "Electricity bill due tomorrow.");
-        fill_item(&schedule->items[2], "evt-005", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[2], "evt-005", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Family dinner", "18:00", "20:00", "Grandma's house", "Family",
                   "Birthday meal and cake.");
         return;
@@ -114,10 +118,10 @@ static void build_day_schedule(day_schedule_t *schedule, int day_index)
 
     if ((day_index % 7) == 2) {
         schedule->item_count = 2;
-        fill_item(&schedule->items[0], "evt-weekly", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[0], "evt-weekly", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Bin night", "19:00", "19:15", "Home", "Household",
                   "Put recycling and general waste out.");
-        fill_item(&schedule->items[1], "tsk-weekly", CALENDAR_ITEM_TASK, true, false,
+        fill_item(&schedule->items[1], "tsk-weekly", CALENDAR_ITEM_TASK, true, false, false, false,
                   "Check school letters", "Any", "", "", "Family",
                   "Review notices and sign forms if needed.");
         return;
@@ -125,7 +129,7 @@ static void build_day_schedule(day_schedule_t *schedule, int day_index)
 
     if ((day_index % 5) == 0) {
         schedule->item_count = 1;
-        fill_item(&schedule->items[0], "tsk-plan", CALENDAR_ITEM_TASK, true, false,
+        fill_item(&schedule->items[0], "tsk-plan", CALENDAR_ITEM_TASK, true, false, false, false,
                   "Meal planning", "Any", "", "", "Household",
                   "Plan dinners for the next few days.");
         return;
@@ -133,7 +137,7 @@ static void build_day_schedule(day_schedule_t *schedule, int day_index)
 
     if ((day_index % 3) == 0) {
         schedule->item_count = 1;
-        fill_item(&schedule->items[0], "evt-club", CALENDAR_ITEM_EVENT, false, false,
+        fill_item(&schedule->items[0], "evt-club", CALENDAR_ITEM_EVENT, false, false, false, false,
                   "Club activity", "16:00", "17:00", "Community hall", "Family",
                   "Standing after-school activity.");
     }
@@ -278,6 +282,8 @@ static void parse_item_json(cJSON *item_json, calendar_item_t *item)
               json_string_or(item_json, "id", ""),
               type,
               json_bool_or(item_json, "all_day", false),
+              json_bool_or(item_json, "continues_from_prev_day", false),
+              json_bool_or(item_json, "continues_next_day", false),
               json_bool_or(item_json, "completed", false),
               json_string_or(item_json, "title", "Untitled"),
               json_string_or(item_json, "start", ""),

@@ -18,7 +18,7 @@ typedef struct {
 
 esp_err_t display_layer_init(bool skip_splash);
 void display_layer_render(const display_render_request_t *request);
-void display_layer_update_clock(const char *datetime_str);
+void display_layer_update_topbar(const char *datetime_str, const char *wifi_status, bool detail_mode, bool sleep_mode);
 uint32_t display_layer_framebuffer_checksum(void);
 
 #endif

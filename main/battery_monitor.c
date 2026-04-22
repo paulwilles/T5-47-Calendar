@@ -118,7 +118,7 @@ void battery_monitor_format(char *buf, size_t len)
 
     int mv = battery_monitor_read_mv();
     if (mv <= 0) {
-        snprintf(buf, len, "?.??V ?%%");
+        snprintf(buf, len, "?%%");
         return;
     }
 
@@ -127,6 +127,5 @@ void battery_monitor_format(char *buf, size_t len)
     if (mv < BATT_EMPTY_MV) mv = BATT_EMPTY_MV;
     int pct = (mv - BATT_EMPTY_MV) * 100 / (BATT_FULL_MV - BATT_EMPTY_MV);
 
-    snprintf(buf, len, "%d.%02dV %d%%",
-             mv / 1000, (mv % 1000) / 10, pct);
+    snprintf(buf, len, "%d%%", pct);
 }
