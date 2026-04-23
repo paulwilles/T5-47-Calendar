@@ -27,6 +27,11 @@ static const char *TAG = "display_layer";
 #define CLOCK_W      308   /* even number for EPD 4-bit alignment */
 #define CLOCK_H      APP_TOP_BAR_HEIGHT
 
+/* Keep battery text at a fixed position so it never shifts when status text changes. */
+#define TOPBAR_STATUS_X      12
+#define TOPBAR_BATTERY_X    152
+#define TOPBAR_STATUS_MAX_W (TOPBAR_BATTERY_X - TOPBAR_STATUS_X - 10)
+
 static uint8_t *s_framebuffer = NULL;
 static size_t s_framebuffer_size = 0;
 static bool s_epd_ready = false;
@@ -198,6 +203,33 @@ static void draw_button_strip(int ty, bool detail_mode, bool sleep_mode)
     draw_fira_small_white(520, ty, detail_mode ? "BACK" : "SEL");
 }
 
+static void draw_topbar_status(const char *wifi_status, int ty)
+{
+    if (!wifi_status || !wifi_status[0]) {
+        return;
+    }
+
+    /* Input is usually "<status>  |  <battery>" from main.c. */
+    const char *sep = strstr(wifi_status, "  |  ");
+    if (!sep) {
+        draw_fira_small_white(TOPBAR_STATUS_X, ty, wifi_status);
+        return;
+    }
+
+    char status_text[96] = {0};
+    char batt_text[24] = {0};
+    size_t left_len = (size_t)(sep - wifi_status);
+    if (left_len >= sizeof(status_text)) {
+        left_len = sizeof(status_text) - 1;
+    }
+    memcpy(status_text, wifi_status, left_len);
+    status_text[left_len] = '\0';
+    snprintf(batt_text, sizeof(batt_text), "%s", sep + 5);
+
+    draw_fira_small_white_truncated(TOPBAR_STATUS_X, ty, status_text, TOPBAR_STATUS_MAX_W);
+    draw_fira_small_white(TOPBAR_BATTERY_X, ty, batt_text);
+}
+
 static void build_top_bar(const display_render_request_t *request)
 {
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
@@ -205,9 +237,7 @@ static void build_top_bar(const display_render_request_t *request)
     /* Vertically centre FiraSansSmall (ascender=24) inside bar (height=38).
      * top_y=7 → baseline=7+24=31, descender ends at 31+7=38 — fits exactly. */
     const int ty = 7;
-    if (request->wifi_status) {
-        draw_fira_small_white(12, ty, request->wifi_status);
-    }
+    draw_topbar_status(request->wifi_status, ty);
     draw_button_strip(ty, request->detail_mode, /*sleep_mode=*/false);
     if (request->datetime_str) {
         draw_fira_small_white(CLOCK_X + 4, ty, request->datetime_str);
@@ -875,9 +905,7 @@ void display_layer_update_topbar(const char *datetime_str, const char *wifi_stat
     const int ty = 7;
     fill_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_DARK);
     draw_rect(0, 0, APP_SCREEN_WIDTH, APP_TOP_BAR_HEIGHT, COLOR_BLACK);
-    if (wifi_status && wifi_status[0]) {
-        draw_fira_small_white(12, ty, wifi_status);
-    }
+    draw_topbar_status(wifi_status, ty);
     draw_button_strip(ty, detail_mode, sleep_mode);
     if (datetime_str && datetime_str[0]) {
         fill_rect(CLOCK_X, 0, CLOCK_W, APP_TOP_BAR_HEIGHT, COLOR_DARK);
