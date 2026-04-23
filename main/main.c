@@ -28,6 +28,7 @@ typedef struct {
     int32_t  selected_item_index;
     uint32_t mode;
     int32_t  render_count;
+    char     wifi_status_base[64];
 } rtc_persistent_t;
 
 #define APP_RTC_MAGIC 0xCA1E4747UL
@@ -48,6 +49,7 @@ typedef struct {
     int last_rendered_item_index;
     ui_mode_t mode;
     ui_mode_t last_rendered_mode;
+    char last_wifi_base[64];
     char last_wifi_status[128];
     int render_count;
 } app_state_t;
@@ -66,6 +68,19 @@ static void format_timestamp(time_t when, char *buffer, size_t length)
     }
 
     snprintf(buffer, length, "uptime %llus", (unsigned long long)when);
+}
+
+static void compose_topbar_status(const char *wifi_status_base, char *buffer, size_t length)
+{
+    if (!buffer || length == 0) {
+        return;
+    }
+
+    char batt_str[16] = {0};
+    battery_monitor_format(batt_str, sizeof(batt_str));
+
+    const char *base = (wifi_status_base && wifi_status_base[0]) ? wifi_status_base : "offline";
+    snprintf(buffer, length, "%.60s  |  %s", base, batt_str);
 }
 
 static void ensure_valid_selection(app_state_t *state)
@@ -234,11 +249,10 @@ static void log_right_pane(const app_state_t *state)
 static void render_dashboard(app_state_t *state)
 {
     const char *wifi_status_raw = wifi_manager_status_text();
-    char batt_str[16];
-    battery_monitor_format(batt_str, sizeof(batt_str));
     char wifi_status_buf[128];
-    snprintf(wifi_status_buf, sizeof(wifi_status_buf), "%.60s  |  %s",
-             wifi_status_raw ? wifi_status_raw : "", batt_str);
+    snprintf(state->last_wifi_base, sizeof(state->last_wifi_base), "%.63s",
+             wifi_status_raw ? wifi_status_raw : "offline");
+    compose_topbar_status(state->last_wifi_base, wifi_status_buf, sizeof(wifi_status_buf));
     const char *wifi_status = wifi_status_buf;
     bool needs_refresh = (state->render_count == 0) ||
                          !snapshot_visual_equals(&state->snapshot, &state->last_rendered_snapshot) ||
@@ -372,6 +386,7 @@ void app_main(void)
         state->selected_item_index = (int)s_rtc.selected_item_index;
         state->mode                = (ui_mode_t)s_rtc.mode;
         state->render_count        = (int)s_rtc.render_count;
+        snprintf(state->last_wifi_base, sizeof(state->last_wifi_base), "%.63s", s_rtc.wifi_status_base);
         ESP_LOGI(TAG, "RTC state: day=%d item=%d mode=%d renders=%d",
                  state->selected_day_index, state->selected_item_index,
                  (int)state->mode, state->render_count);
@@ -394,10 +409,10 @@ void app_main(void)
         time_t tnow = time(NULL);
         struct tm *tm_info = localtime(&tnow);
         strftime(datetime_buf, sizeof(datetime_buf), "%a %d %b %Y %H:%M", tm_info);
-        char batt_str[16];
         battery_monitor_init();
-        battery_monitor_format(batt_str, sizeof(batt_str));
-        display_layer_update_topbar(datetime_buf, batt_str,
+        char status_buf[128];
+        compose_topbar_status(state->last_wifi_base, status_buf, sizeof(status_buf));
+        display_layer_update_topbar(datetime_buf, status_buf,
                                     (state->mode == UI_MODE_DETAIL), /*sleep_mode=*/true);
     } else {
         /* Button wake or first boot: full subsystem init */
@@ -431,9 +446,9 @@ void app_main(void)
                 struct tm *tmi = localtime(&tnow);
                 strftime(datetime_buf_fast, sizeof(datetime_buf_fast), "%a %d %b %Y %H:%M", tmi);
             }
-            char batt_str_fast[16];
-            battery_monitor_format(batt_str_fast, sizeof(batt_str_fast));
-            display_layer_update_topbar(datetime_buf_fast, batt_str_fast,
+            char status_buf_fast[128];
+            compose_topbar_status(state->last_wifi_base, status_buf_fast, sizeof(status_buf_fast));
+            display_layer_update_topbar(datetime_buf_fast, status_buf_fast,
                                         (state->mode == UI_MODE_DETAIL), /*sleep_mode=*/false);
         }
 
@@ -556,9 +571,9 @@ void app_main(void)
             time_t tnow = time(NULL);
             struct tm *tm_info = localtime(&tnow);
             strftime(datetime_buf, sizeof(datetime_buf), "%a %d %b %Y %H:%M", tm_info);
-            char batt_str[16];
-            battery_monitor_format(batt_str, sizeof(batt_str));
-            display_layer_update_topbar(datetime_buf, batt_str,
+            char status_buf[128];
+            compose_topbar_status(state->last_wifi_base, status_buf, sizeof(status_buf));
+            display_layer_update_topbar(datetime_buf, status_buf,
                                         (state->mode == UI_MODE_DETAIL), /*sleep_mode=*/true);
         }
 
@@ -568,6 +583,8 @@ void app_main(void)
         s_rtc.selected_item_index = (int32_t)state->selected_item_index;
         s_rtc.mode                = (uint32_t)state->mode;
         s_rtc.render_count        = (int32_t)state->render_count;
+        snprintf(s_rtc.wifi_status_base, sizeof(s_rtc.wifi_status_base), "%.63s",
+             state->last_wifi_base[0] ? state->last_wifi_base : "offline");
 
 #if APP_ENABLE_WIFI
         wifi_manager_stop();
