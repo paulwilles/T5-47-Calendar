@@ -907,6 +907,64 @@ void display_layer_update_topbar(const char *datetime_str, const char *wifi_stat
     }
 }
 
+/* Title strip constants — must stay in sync with build_overview_grid(). */
+#define TITLE_X       (APP_LEFT_PANE_WIDTH + 8)
+#define TITLE_Y        APP_TOP_BAR_HEIGHT
+#define TITLE_H        36   /* FiraSansSmall advance_y=30 + 6px breathing room */
+/* Width must be even for EPD 4-bit alignment.  APP_RIGHT_PANE_WIDTH (640) is even. */
+#define TITLE_W        APP_RIGHT_PANE_WIDTH
+
+void display_layer_show_nav_hint(int count, bool forward)
+{
+    if (!s_framebuffer || !s_epd_ready) {
+        return;
+    }
+
+    /* Build hint string: arrows on the appropriate side of the title */
+    char hint[48];
+    if (count <= 0) {
+        snprintf(hint, sizeof(hint), "4 Week View");
+    } else {
+        char arrows[12] = {0};
+        int n = (count > 8) ? 8 : count;
+        for (int i = 0; i < n; i++) {
+            arrows[i] = forward ? '>' : '<';
+        }
+        arrows[n] = '\0';
+        if (forward) {
+            snprintf(hint, sizeof(hint), "4 Week View %s", arrows);
+        } else {
+            snprintf(hint, sizeof(hint), "%s 4 Week View", arrows);
+        }
+    }
+
+    /* Repaint just the title strip in the framebuffer */
+    fill_rect(APP_LEFT_PANE_WIDTH, TITLE_Y, TITLE_W, TITLE_H, COLOR_WHITE);
+    draw_fira_small(TITLE_X, TITLE_Y + 4, hint);
+
+    /* Push only the title strip as a fast partial EPD update */
+    const int rect_x = APP_LEFT_PANE_WIDTH;   /* 320 — even, aligned */
+    const size_t rect_row_bytes = (size_t)TITLE_W / 2;
+    uint8_t *title_buf = malloc(rect_row_bytes * TITLE_H);
+    if (title_buf) {
+        const size_t fb_row_stride = (size_t)APP_SCREEN_WIDTH / 2;
+        const size_t x_byte_offset = (size_t)rect_x / 2;
+        for (int row = 0; row < TITLE_H; ++row) {
+            const uint8_t *src = s_framebuffer + (size_t)(TITLE_Y + row) * fb_row_stride + x_byte_offset;
+            memcpy(title_buf + (size_t)row * rect_row_bytes, src, rect_row_bytes);
+        }
+        Rect_t title_rect = { .x = rect_x, .y = TITLE_Y, .width = TITLE_W, .height = TITLE_H };
+        ESP_LOGI(TAG, "Nav hint: count=%d fwd=%d text='%s'", count, (int)forward, hint);
+        epd_poweron();
+        epd_clear_area_cycles(title_rect, 1, 20);
+        epd_draw_grayscale_image(title_rect, title_buf);
+        epd_poweroff();
+        free(title_buf);
+    } else {
+        ESP_LOGW(TAG, "Nav hint skipped: malloc failed");
+    }
+}
+
 void display_layer_render(const display_render_request_t *request)
 {
     if (!s_framebuffer || !request) {

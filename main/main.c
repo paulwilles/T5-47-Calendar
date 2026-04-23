@@ -477,16 +477,76 @@ void app_main(void)
         if (button_wake) {
             int64_t last_activity = esp_timer_get_time();
             ESP_LOGI(TAG, "Interactive window (%ds inactivity timeout)", APP_INTERACTIVE_TIMEOUT_S);
+
+            /* Batch-navigation state: accumulate rapid NEXT/PREV presses in overview mode
+             * and render once after a 500 ms pause, showing arrow symbols as instant feedback. */
+            int    nav_count   = 0;
+            bool   nav_forward = false;
+            int64_t nav_last   = 0;
+#define NAV_BATCH_TIMEOUT_US  500000LL   /* 0.5 s */
+
             while ((esp_timer_get_time() - last_activity) <
                    ((int64_t)APP_INTERACTIVE_TIMEOUT_S * 1000000LL)) {
                 button_action_t act = button_input_poll();
                 if (act != BUTTON_ACTION_NONE) {
                     ESP_LOGI(TAG, "Button: %s", button_input_name(act));
-                    apply_button_action(state, act);
                     last_activity = esp_timer_get_time();
+
+                    bool is_nav_press = (act == BUTTON_ACTION_NEXT || act == BUTTON_ACTION_PREV);
+                    bool in_overview  = (state->mode == UI_MODE_OVERVIEW);
+
+                    if (is_nav_press && in_overview) {
+                        bool fwd = (act == BUTTON_ACTION_NEXT);
+
+                        /* Direction change: flush pending moves immediately */
+                        if (nav_count > 0 && nav_forward != fwd) {
+                            for (int i = 0; i < nav_count; i++) {
+                                state_apply_button(state, nav_forward ? BUTTON_ACTION_NEXT : BUTTON_ACTION_PREV);
+                            }
+                            nav_count = 0;
+                            render_dashboard(state);
+                        }
+
+                        nav_forward = fwd;
+                        nav_count++;
+                        nav_last = esp_timer_get_time();
+                        /* No per-press EPD update: the e-paper partial refresh blocks ~300ms
+                         * and causes subsequent presses to be missed.  The batch render
+                         * after the 500ms timeout is the visual feedback. */
+                        ESP_LOGI(TAG, "Nav batch: count=%d fwd=%d", nav_count, (int)nav_forward);
+                    } else {
+                        /* Non-nav action: flush any pending nav first, then handle this action */
+                        if (nav_count > 0) {
+                            for (int i = 0; i < nav_count; i++) {
+                                state_apply_button(state, nav_forward ? BUTTON_ACTION_NEXT : BUTTON_ACTION_PREV);
+                            }
+                            nav_count = 0;
+                        }
+                        apply_button_action(state, act);
+                    }
                 }
+
+                /* Flush pending nav moves after the batch timeout */
+                if (nav_count > 0 &&
+                    (esp_timer_get_time() - nav_last) >= NAV_BATCH_TIMEOUT_US) {
+                    for (int i = 0; i < nav_count; i++) {
+                        state_apply_button(state, nav_forward ? BUTTON_ACTION_NEXT : BUTTON_ACTION_PREV);
+                    }
+                    nav_count = 0;
+                    render_dashboard(state);
+                }
+
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
+
+            /* Flush any residual pending nav before sleeping */
+            if (nav_count > 0) {
+                for (int i = 0; i < nav_count; i++) {
+                    state_apply_button(state, nav_forward ? BUTTON_ACTION_NEXT : BUTTON_ACTION_PREV);
+                }
+                render_dashboard(state);
+            }
+
             ESP_LOGI(TAG, "Interactive timeout, entering deep sleep");
         }
 
